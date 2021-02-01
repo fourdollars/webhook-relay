@@ -1,0 +1,22 @@
+{
+  "name": "webhook-relay",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "dependencies": {
+    "eventsource": "^1.0.7",
+    "express": "^4.17.1",
+    "express-sse": "^0.5.3",
+    "livescript": "^1.4.0",
+    "prelude-ls": "^1.1.2",
+    "progress": "^1.1.8",
+    "prompt": "^0.2.14",
+    "request": "^2.67.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "relay": "node index.js"
+  },
+  "author": "Shih-Yuan Lee (FourDollars)",
+  "license": "ISC"
+}
