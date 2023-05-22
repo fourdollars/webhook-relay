@@ -83,6 +83,34 @@ const handlePayload = (payload) => {
         console.log('== body ==')
         console.log(body)
     }
+    if ('x-line-signature' in headers) {
+        var signature = crypto.createHmac('sha256', secret).update(payload.body).digest("base64")
+        if (headers['x-line-signature'] == signature) {
+            console.log('== headers ==')
+            console.log(headers)
+            console.log('== body ==')
+            console.log(util.inspect(body, false, null, true))
+            var url = new URL(process.argv[4])
+
+            var options = {
+                host: url.hostname,
+                port: url.port,
+                path: url.pathname,
+                headers: headers,
+                method: 'POST'
+            }
+
+            console.log('= response =')
+            const req = http.request(options, (res) => {
+                res.on('data', (chunk) => {
+                    console.log(chunk.toString())
+                })
+            })
+            req.write(payload.body)
+            req.end()
+        }
+        return
+    }
 }
 
 encrypted_webhook = (e) => {

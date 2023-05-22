@@ -2,6 +2,7 @@
 
 from sseclient import SSEClient
 from argparse import ArgumentParser
+import base64
 import hashlib
 import hmac
 import json
@@ -15,11 +16,11 @@ parser.add_argument("-p", "--passphrase", help="A passphrase of the private key.
 args = parser.parse_args()
 
 
-def make_signature(content, secret):
+def make_signature(content, secret, digestmod):
     secret = bytes(secret, 'UTF-8')
     content = bytes(content, 'UTF-8')
-    digester = hmac.new(secret, content, hashlib.sha1)
-    return digester.hexdigest()
+    digester = hmac.new(secret, content, digestmod)
+    return digester
 
 
 def check_payload(payload, secret):
@@ -31,8 +32,18 @@ def check_payload(payload, secret):
                 return None, None
             hash_method, hash_signature = headers['x-hub-signature'].split('=')
             if hash_method == 'sha1':
-                if make_signature(payload['body'], secret) == hash_signature:
+                if make_signature(payload['body'], secret, hashlib.sha1).hexdigest() == hash_signature:
                     return headers, json.loads(payload['body'])
+        elif 'x-gitlab-token' in headers:
+            if headers['x-gitlab-token'] == secret:
+                return headers, json.loads(payload['body'])
+        elif 'x-line-signature' in headers:
+            if secret is None:
+                print("You didn't provide the shared secret to verify the messages.")
+                return None, None
+            signature = headers['x-line-signature']
+            if make_signature(payload['body'], secret, hashlib.sha256).digest() == base64.b64decode(signature):
+                return headers, json.loads(payload['body'])
         else:
             return json.loads(payload['headers']), json.loads(payload['body'])
     return None, None
@@ -71,7 +82,6 @@ try:
                     key.read(),
                     password=passphrase
                 )
-                import base64
                 encrypted_key = base64.b64decode(encrypted_key)
                 real_key = private_key.decrypt(
                     encrypted_key,

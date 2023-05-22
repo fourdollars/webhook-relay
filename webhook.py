@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
+import base64
 import hashlib
 import hmac
 import json
 import sys
 
 
-def make_signature(content, secret):
+def make_signature(content, secret, digestmod):
     secret = bytes(secret, 'UTF-8')
     content = bytes(content, 'UTF-8')
-    digester = hmac.new(secret, content, hashlib.sha1)
-    return digester.hexdigest()
+    digester = hmac.new(secret, content, digestmod)
+    return digester
 
 
 def check_payload(payload, secret):
@@ -19,10 +20,14 @@ def check_payload(payload, secret):
         if 'x-hub-signature' in headers:
             hash_method, hash_signature = headers['x-hub-signature'].split('=')
             if hash_method == 'sha1':
-                if make_signature(payload['body'], secret) == hash_signature:
+                if make_signature(payload['body'], secret, hashlib.sha1).hexdigest() == hash_signature:
                     return headers, json.loads(payload['body'])
         elif 'x-gitlab-token' in headers:
             if headers['x-gitlab-token'] == secret:
+                return headers, json.loads(payload['body'])
+        elif 'x-line-signature' in headers:
+            signature = headers['x-line-signature']
+            if make_signature(payload['body'], secret, hashlib.sha256).digest() == base64.b64decode(signature):
                 return headers, json.loads(payload['body'])
     return None, None
 

@@ -125,6 +125,22 @@ app.post('/relay/:id', async (req, res) => {
                 return res.status(404).end()
             }
         }
+        /* Line */
+        if ('x-line-signature' in req.headers) {
+            var secret_file = path.join(secretFolder, req.params.id)
+            if (!fs.existsSync(secret_file)) {
+//                console.log(secret_file + " doesn't exist.")
+                return res.status(404).end()
+            }
+            var secret = fs.readFileSync(secret_file, 'utf8')
+            var base64 = crypto.createHmac('sha256', secret).update(req.rawPayload).digest("base64");
+            if (req.headers['x-line-signature'] == base64) {
+                return sendPayload(req, res)
+            } else {
+//                console.log("x-line-signature doesn't match.")
+                return res.status(404).end()
+            }
+        }
     }
     res.status(404).end()
 })
