@@ -46,7 +46,7 @@ while read -r field value; do
                     data="${data:1:-1}"
                     read -r encrypted_key iv encrypted_text < <(echo "$data")
                     echo "$encrypted_key" | openssl base64 -d > encrypted_key
-                    openssl rsautl -decrypt -in encrypted_key -out decrypted_key -inkey "$KEY" -passin "pass:$PASS" -oaep
+                    openssl pkeyutl -decrypt -in encrypted_key -out decrypted_key -inkey "$KEY" -passin "pass:$PASS" -pkeyopt rsa_padding_mode:oaep
                     rm -f encrypted_key
                     ENCRYPTION_KEY=$(cat decrypted_key)
                     rm -f decrypted_key
