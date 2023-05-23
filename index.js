@@ -154,7 +154,7 @@ app.post('/relay/:id', async (req, res) => {
 //                console.log(secret_file + " doesn't exist.")
                 return res.status(404).end()
             }
-            var secret = fs.readFileSync(secret_file, 'utf8')
+            var secret = fs.readFileSync(secret_file, 'utf8').trim()
             var base64 = crypto.createHmac('sha256', secret).update(req.rawPayload).digest("base64");
             if (req.headers['x-line-signature'] == base64) {
                 return sendPayload(req, res)
