@@ -47,7 +47,11 @@ app.get('/stream', (req, res) => {
 })
 
 app.get('/relay/', (req, res) => {
-    res.end(JSON.stringify(pool))
+    let output = {}
+    for (let key in pool) {
+        output[key] = pool[key].counter
+    }
+    res.end(JSON.stringify(output))
 })
 
 app.get('/relay/:id', (req, res) => {
