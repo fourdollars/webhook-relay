@@ -11,7 +11,6 @@ const pool = {}
 const pubFolder = path.join(__dirname, 'public')
 const pemFolder = path.join(__dirname, 'pem')
 const secretFolder = path.join(__dirname, 'secret')
-let timer = null
 
 function encrypt_symmetric(text, relativeOrAbsolutePathToPublicKey) {
     let iv = crypto.randomBytes(16)
@@ -52,29 +51,31 @@ app.get('/relay/', (req, res) => {
 })
 
 app.get('/relay/:id', (req, res) => {
-    if (!(req.params.id in pool)) {
-        pool[req.params.id] = {
+    let id = req.params.id
+    if (!(id in pool)) {
+        pool[id] = {
             'sse': new SSE(),
-            'counter': 1
+            'counter': 1,
+            'timer': null
         }
     } else {
-        pool[req.params.id].counter += 1
+        pool[id].counter += 1
     }
-    pool[req.params.id].sse.init(req, res)
+    pool[id].sse.init(req, res)
     req.on('close', () => {
-        pool[req.params.id].counter -= 1
-        if (pool[req.params.id].counter == 0) {
-            if (timer) {
-                clearInterval(timer)
-                timer = null
+        pool[id].counter -= 1
+        if (pool[id].counter == 0) {
+            if (pool[id].timer) {
+                clearInterval(pool[id].timer)
+                pool[id].timer = null
             }
-            delete pool[req.params.id]
+            delete pool[id]
         }
     })
-    pool[req.params.id].sse.send(pool[req.params.id].counter, "ping")
-    if (timer === null) {
-        timer = setInterval(function(){
-            pool[req.params.id].sse.send(pool[req.params.id].counter, "ping")
+    pool[id].sse.send(pool[id].counter, "ping")
+    if (pool[id].timer === null) {
+        pool[id].timer = setInterval(function(){
+            pool[id].sse.send(pool[id].counter, "ping")
         }, 7500)
     }
 })
