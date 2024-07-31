@@ -57,4 +57,4 @@ while read -r field value; do
             esac
             ;;
     esac
-done < <(wget -q "$url" -O -)
+done < <(curl -NsSfL "$url")
