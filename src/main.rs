@@ -1,16 +1,23 @@
-use actix_web::{get, post, web, App, Error, HttpResponse, HttpServer};
+use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer};
 use actix_web::body::BodyStream;
 use base64::Engine;
 use futures_util::stream::StreamExt;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::{self, Sender};
 use tokio_stream::wrappers::BroadcastStream;
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Message {
+    payload: String,
+    headers: HashMap<String, String>,
+}
+
 /// Type alias for our global channels HashMap.
-/// The HashMap key is the channel ID (String), and the value is a broadcast::Sender<String>
+/// The HashMap key is the channel ID (String), and the value is a broadcast::Sender<Message>
 /// used for sending SSE messages.
-type GlobalChannels = Arc<Mutex<HashMap<String, Sender<String>>>>;
+type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Message>>>>;
 
 /// Formats a message into an SSE event string.
 fn format_sse_event(data: &str) -> String {
@@ -33,7 +40,7 @@ fn get_or_create_stream_channel_stream(
         // If no channel exists for this ID, create a new broadcast channel.
         // Buffer size of 1024 means up to 1024 messages can be stored if not received.
         // If the buffer is full, sending will return an Err(SendError::Full).
-        let (tx, _rx) = broadcast::channel::<String>(1024);
+        let (tx, _rx) = broadcast::channel::<Message>(1024);
         println!("New broadcast channel '{}' created.", id);
         tx
     });
@@ -46,8 +53,16 @@ fn get_or_create_stream_channel_stream(
     // Convert the BroadcastStream into a `Stream<Item = Result<Bytes, Error>>`,
     // which is the expected Item type for `actix_web::body::BodyStream`.
     BroadcastStream::new(rx).map(move |msg_result| {
-        let formatted_data = match msg_result {
-            Ok(data) => format_sse_event(&data),
+        let formatted_bytes = match msg_result {
+            Ok(msg) => {
+                let json_string = serde_json::to_string(&msg).unwrap_or_else(|e| {
+                        eprintln!("Failed to serialize Message: {}", e);
+                        // Return an error JSON if serialization fails
+                        format!(r#"{{"error": "Failed to serialize message: {}"}}"#, e)
+                    });
+                // Format the JSON string as an SSE event
+                format_sse_event(&json_string)
+            },
             Err(e) => {
                 // Handle receive errors (e.g., Lagged error if receiver falls too far behind)
                 eprintln!("Error receiving message for channel '{}': {}", id, e);
@@ -55,13 +70,13 @@ fn get_or_create_stream_channel_stream(
             }
         };
         // Convert the String to web::Bytes as required by BodyStream
-        Ok(web::Bytes::from(formatted_data))
+        Ok(web::Bytes::from(formatted_bytes))
     })
 }
 
 /// Gets the existing SSE stream channel's sender.
 /// This is called when a POST request is received to send a message to a channel.
-fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<String>, Error> {
+fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<Message>, Error> {
     let map = channels.lock().map_err(|e| {
         eprintln!("Failed to lock channels: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to access channels")
@@ -104,6 +119,7 @@ async fn relay_get(
 /// Handles POST requests to broadcast a message to a specific SSE channel.
 #[post("/relay/{id}")]
 async fn relay_post(
+    req: HttpRequest,
     id: web::Path<String>,
     mut payload: web::Payload,
     channels_data: web::Data<GlobalChannels>, // Injects the global channels data
@@ -117,9 +133,27 @@ async fn relay_post(
         data.push_str(&String::from_utf8_lossy(&chunk));
     }
 
+    // Extract headers into a HashMap<String, String>
+    let mut headers = HashMap::new();
+    for (key, value) in req.headers().iter() {
+        if let Ok(value_str) = value.to_str() {
+            headers.insert(key.to_string(), value_str.to_string());
+        } else {
+            eprintln!("Warning: Header value for '{}' is not valid UTF-8.", key);
+        }
+    }
+
+    // Create the Message instance
+    let message = Message {
+        payload: data,
+        headers,
+    };
+
+    println!("Received: {:#?}", message);
+
     // Send the message to all subscribers of the broadcast channel.
     // `sender.send()` returns an `Err` if all receivers have been dropped or the channel is closed.
-    if let Err(e) = sender.send(data) {
+    if let Err(e) = sender.send(message) {
         eprintln!("Failed to send message to broadcast channel: {}", e);
         // In a more robust application, you might want to remove the channel from the HashMap here
         return Err(actix_web::error::ErrorInternalServerError(
