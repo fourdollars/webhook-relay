@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4.11.0"
+base64 = "0.22.1"
 futures-util = "0.3.31"
 tokio = "1.45.1"
 tokio-stream = { version = "0.1.17", features = ["sync"] }

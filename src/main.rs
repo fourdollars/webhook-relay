@@ -1,5 +1,6 @@
 use actix_web::{get, post, web, App, Error, HttpResponse, HttpServer};
 use actix_web::body::BodyStream;
+use base64::Engine;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,8 @@ type GlobalChannels = Arc<Mutex<HashMap<String, Sender<String>>>>;
 
 /// Formats a message into an SSE event string.
 fn format_sse_event(data: &str) -> String {
-    format!("data: {}\n\n", data)
+    let data = Engine::encode(&base64::engine::general_purpose::STANDARD, data);
+    format!("event: webhook\ndata: {}\n\n", data)
 }
 
 // --- Channel Management Functions ---
