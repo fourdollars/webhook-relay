@@ -103,7 +103,12 @@ fn list_channels_page(channels: GlobalChannels) -> String {
 }
 
 #[get("/")]
-async fn index(
+async fn index() -> impl Responder {
+    HttpResponse::Ok().body("<h1>Webhook Relay</h1>")
+}
+
+#[get("/admin")]
+async fn admin(
     req: HttpRequest,
     credentials: web::Data<(String, String)>,
     channels_data: web::Data<GlobalChannels>,
@@ -140,6 +145,9 @@ async fn relay_get(
     id: web::Path<String>,
     channels_data: web::Data<GlobalChannels>,
 ) -> HttpResponse {
+    if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return HttpResponse::BadRequest().body("Invalid channel ID");
+    }
     let mut res_builder = HttpResponse::Ok();
     res_builder
         .insert_header(("Content-Type", "text/event-stream"))
@@ -206,6 +214,9 @@ async fn relay_post(
     mut payload: web::Payload,
     channels_data: web::Data<GlobalChannels>, // Injects the global channels data
 ) -> Result<HttpResponse, Error> {
+    if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(HttpResponse::BadRequest().body("Invalid channel ID"));
+    }
     let sender = get_broadcast_sender(id.clone(), channels_data.get_ref().clone())?;
     let mut data = String::new();
 
@@ -278,14 +289,13 @@ async fn main() -> std::io::Result<()> {
     println!("Starting Actix-Web broadcast SSE relay service on http://{}", addr);
 
     HttpServer::new(move || {
-        // Use .app_data() to add the `channels` data to the application state.
-        // `.clone()` is necessary because the closure is called multiple times (once per worker).
         App::new()
             .app_data(web::Data::new(channels.clone())) // Pass channels to the App
             .app_data(web::Data::new((user.clone(), pass.clone()))) // Pass user and pass to the App
             .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
             .service(favicon)
             .service(index)
+            .service(admin)
             .service(relay_get)
             .service(relay_post)
             .default_service(web::to(not_found))
