@@ -1,5 +1,5 @@
 use actix_web::body::BodyStream;
-use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer};
+use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer, Responder, middleware::NormalizePath};
 use base64::Engine;
 use futures_util::stream::StreamExt;
 use hmac::{Hmac, Mac};
@@ -31,7 +31,7 @@ fn format_sse_event(data: &str) -> String {
 // --- Channel Management Functions ---
 
 /// Gets or creates a new SSE stream channel (broadcast mode).
-/// This function is called when a client connects to `/relay/{id}`.
+/// This function is called when a client connects to `/{id}`.
 /// It returns a Stream that needs to be wrapped by `BodyStream` to be used as an `HttpResponse` body.
 fn get_or_create_stream_channel_stream(
     id: String,
@@ -102,7 +102,7 @@ async fn index() -> HttpResponse {
 }
 
 /// Handles GET requests to receive messages from a specific SSE channel.
-#[get("/relay/{id}")]
+#[get("/{id}")]
 async fn relay_get(
     id: web::Path<String>,
     channels_data: web::Data<GlobalChannels>, // Injects the global channels data
@@ -134,7 +134,6 @@ fn read_secret_key(id: &str) -> String {
 }
 
 fn validate_signature(signature_type: SignatureType, expected_signature: &str, payload: &str, secret_key: &str) -> bool {
-    let mut valid = true;
     if secret_key.is_empty() {
         eprintln!("Error: Secret key is empty for channel '{}'.", expected_signature);
         return false;
@@ -146,12 +145,12 @@ fn validate_signature(signature_type: SignatureType, expected_signature: &str, p
             let signature_bytes = mac.finalize().into_bytes();
             let signature = format!("sha1={}", hex::encode(signature_bytes));
             if signature != expected_signature {
-                valid = false;
+                return false;
             }
         },
         SignatureType::XGitlabToken => {
             if expected_signature != secret_key {
-                valid = false;
+                return false;
             }
         },
         SignatureType::XLineSignature => {
@@ -160,15 +159,15 @@ fn validate_signature(signature_type: SignatureType, expected_signature: &str, p
             let signature_bytes = mac.finalize().into_bytes();
             let signature = format!("sha256={}", Engine::encode(&base64::engine::general_purpose::STANDARD, signature_bytes));
             if signature != expected_signature {
-                valid = false;
+                return false;
             }
         },
     };
-    valid
+    true
 }
 
 /// Handles POST requests to broadcast a message to a specific SSE channel.
-#[post("/relay/{id}")]
+#[post("/{id}")]
 async fn relay_post(
     req: HttpRequest,
     id: web::Path<String>,
@@ -225,6 +224,12 @@ async fn relay_post(
     Ok(HttpResponse::Ok().finish())
 }
 
+async fn not_found(req: HttpRequest) -> impl Responder {
+    let path = req.uri().path();
+    eprintln!("{:?} {} Not Found", req, path);
+    HttpResponse::NotFound().body(format!("<h1>404 Not Found</h1>"))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Environment variable configuration for host and port
@@ -243,9 +248,11 @@ async fn main() -> std::io::Result<()> {
         // `.clone()` is necessary because the closure is called multiple times (once per worker).
         App::new()
             .app_data(web::Data::new(channels.clone())) // Pass channels to the App
+            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
             .service(index)
             .service(relay_get)
             .service(relay_post)
+            .default_service(web::to(not_found))
     })
     .bind(addr)?
     .run()
