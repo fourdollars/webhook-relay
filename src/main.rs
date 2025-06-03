@@ -1,8 +1,11 @@
-use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer};
 use actix_web::body::BodyStream;
+use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer};
 use base64::Engine;
 use futures_util::stream::StreamExt;
+use hmac::{Hmac, Mac};
 use serde::{Serialize, Deserialize};
+use sha1::Sha1;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::{self, Sender};
@@ -116,6 +119,54 @@ async fn relay_get(
     ))
 }
 
+enum SignatureType {
+    XHubSignature,
+    XGitlabToken,
+    XLineSignature,
+}
+
+fn read_secret_key(id: &str) -> String {
+    let secret_path = format!("secret/{}", id);
+    std::fs::read_to_string(&secret_path).unwrap_or_else(|e| {
+        eprintln!("Failed to read secret key: {}", e);
+        "".to_string()
+    })
+}
+
+fn validate_signature(signature_type: SignatureType, expected_signature: &str, payload: &str, secret_key: &str) -> bool {
+    let mut valid = true;
+    if secret_key.is_empty() {
+        eprintln!("Error: Secret key is empty for channel '{}'.", expected_signature);
+        return false;
+    }
+    match signature_type {
+        SignatureType::XHubSignature => {
+            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size");
+            mac.update(payload.as_bytes());
+            let signature_bytes = mac.finalize().into_bytes();
+            let signature = format!("sha1={}", hex::encode(signature_bytes));
+            if signature != expected_signature {
+                valid = false;
+            }
+        },
+        SignatureType::XGitlabToken => {
+            if expected_signature != secret_key {
+                valid = false;
+            }
+        },
+        SignatureType::XLineSignature => {
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size");
+            mac.update(payload.as_bytes());
+            let signature_bytes = mac.finalize().into_bytes();
+            let signature = format!("sha256={}", Engine::encode(&base64::engine::general_purpose::STANDARD, signature_bytes));
+            if signature != expected_signature {
+                valid = false;
+            }
+        },
+    };
+    valid
+}
+
 /// Handles POST requests to broadcast a message to a specific SSE channel.
 #[post("/relay/{id}")]
 async fn relay_post(
@@ -124,7 +175,7 @@ async fn relay_post(
     mut payload: web::Payload,
     channels_data: web::Data<GlobalChannels>, // Injects the global channels data
 ) -> Result<HttpResponse, Error> {
-    let sender = get_broadcast_sender(id.into_inner(), channels_data.get_ref().clone())?;
+    let sender = get_broadcast_sender(id.clone(), channels_data.get_ref().clone())?;
     let mut data = String::new();
 
     // Iterate over the payload chunks to read the incoming data.
@@ -135,9 +186,16 @@ async fn relay_post(
 
     // Extract headers into a HashMap<String, String>
     let mut headers = HashMap::new();
+    let mut valid = true;
     for (key, value) in req.headers().iter() {
         if let Ok(value_str) = value.to_str() {
             headers.insert(key.to_string(), value_str.to_string());
+            match key.as_str() {
+                "x-hub-signature" => valid = validate_signature(SignatureType::XHubSignature, value_str, &data, &read_secret_key(&id)),
+                "x-gitlab-token" => valid = validate_signature(SignatureType::XGitlabToken, value_str, &data, &read_secret_key(&id)),
+                "x-line-signature" => valid = validate_signature(SignatureType::XLineSignature, value_str, &data, &read_secret_key(&id)),
+                _ => (),
+            }
         } else {
             eprintln!("Warning: Header value for '{}' is not valid UTF-8.", key);
         }
@@ -150,6 +208,10 @@ async fn relay_post(
     };
 
     println!("Received: {:#?}", message);
+
+    if !valid {
+        return Err(actix_web::error::ErrorUnauthorized("Invalid signature"));
+    }
 
     // Send the message to all subscribers of the broadcast channel.
     // `sender.send()` returns an `Err` if all receivers have been dropped or the channel is closed.
@@ -188,4 +250,51 @@ async fn main() -> std::io::Result<()> {
     .bind(addr)?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_x_hub_signature() {
+        let secret_key = "secret";
+        let payload = "payload";
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
+            .expect("HMAC can take any key size in test");
+        mac.update(payload.as_bytes());
+        let signature_bytes = mac.finalize().into_bytes();
+        let calculated_signature = format!("sha1={}", hex::encode(signature_bytes));
+
+        let expected_signature = &calculated_signature;
+
+        let signature_type = SignatureType::XHubSignature;
+        let valid = validate_signature(signature_type, expected_signature, payload, secret_key);
+        assert!(valid, "X-Hub-Signature validation failed: calculated '{}', expected '{}'", calculated_signature, expected_signature);
+    }
+    #[test]
+    fn test_x_gitlab_token() {
+        let secret_key = "secret";
+        let payload = "payload";
+
+        let valid = validate_signature(SignatureType::XGitlabToken, secret_key, payload, secret_key);
+        assert!(valid, "X-Gitlab-Token validation failed: calculated '{}', expected '{}'", secret_key, secret_key);
+    }
+    #[test]
+    fn test_x_line_signature() {
+        let secret_key = "secret";
+        let payload = "payload";
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())
+            .expect("HMAC can take any key size in test");
+        mac.update(payload.as_bytes());
+        let signature_bytes = mac.finalize().into_bytes();
+        let calculated_signature = format!("sha256={}", Engine::encode(&base64::engine::general_purpose::STANDARD, signature_bytes));
+
+        let expected_signature = &calculated_signature;
+
+        let signature_type = SignatureType::XLineSignature;
+        let valid = validate_signature(signature_type, expected_signature, payload, secret_key);
+        assert!(valid, "X-Line-Signature validation failed: calculated '{}', expected '{}'", calculated_signature, expected_signature);
+    }
 }
