@@ -24,7 +24,7 @@ type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Message>>>>;
 
 fn format_webhook_event(data: &str) -> String {
     let data = Engine::encode(&base64::engine::general_purpose::STANDARD, data);
-    format!("event: webhook\ndata: {}\n\n", data)
+    format!("event: webhook\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
 }
 
 fn format_ping_event(data: &str) -> String {
@@ -32,7 +32,7 @@ fn format_ping_event(data: &str) -> String {
 }
 
 fn format_error_event(data: &str) -> String {
-    format!("event: error\ndata: {}\n\n", data)
+    format!("event: error\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
 }
 
 // --- Channel Management Functions ---
