@@ -93,10 +93,20 @@ fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<M
         })
 }
 
+fn list_channels_page(channels: GlobalChannels) -> String {
+    let mut content = String::new();
+    let map = channels.lock().unwrap();
+    for (id, sender) in map.iter() {
+        content.push_str(&format!("<li><a href=\"/{}\">{}/{}</a></li>", id, id, sender.receiver_count()));
+    }
+    content
+}
+
 #[get("/")]
 async fn index(
     req: HttpRequest,
     credentials: web::Data<(String, String)>,
+    channels_data: web::Data<GlobalChannels>,
 ) -> HttpResponse {
     let auth = req.headers().get("Authorization");
 
@@ -113,17 +123,22 @@ async fn index(
     if let Some(auth) = auth {
         let auth = auth.to_str().unwrap_or("");
         if auth == format!("Basic {}", Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{}:{}", user, pass))) {
-            return HttpResponse::Ok().body("Hello from SSE broadcast relay service!");
+            let content = format!("<html><body><h1>Channels</h1><ul>{}</ul></body></html>", list_channels_page(channels_data.get_ref().clone()));
+            return HttpResponse::Ok().body(content);
         }
     }
     HttpResponse::Unauthorized().body("Unauthorized")
 }
 
-/// Handles GET requests to receive messages from a specific SSE channel.
+#[get("/favicon.ico")]
+async fn favicon() -> impl Responder {
+    HttpResponse::Ok().body("")
+}
+
 #[get("/{id}")]
 async fn relay_get(
     id: web::Path<String>,
-    channels_data: web::Data<GlobalChannels>, // Injects the global channels data
+    channels_data: web::Data<GlobalChannels>,
 ) -> HttpResponse {
     let mut res_builder = HttpResponse::Ok();
     res_builder
@@ -131,7 +146,6 @@ async fn relay_get(
         .insert_header(("Cache-Control", "no-cache"))
         .insert_header(("Connection", "keep-alive"));
 
-    // Wrap the Stream returned by `get_or_create_stream_channel_stream` with `BodyStream`.
     res_builder.body(BodyStream::new(
         get_or_create_stream_channel_stream(id.into_inner(), channels_data.get_ref().clone()),
     ))
@@ -270,6 +284,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(channels.clone())) // Pass channels to the App
             .app_data(web::Data::new((user.clone(), pass.clone()))) // Pass user and pass to the App
             .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
+            .service(favicon)
             .service(index)
             .service(relay_get)
             .service(relay_post)
