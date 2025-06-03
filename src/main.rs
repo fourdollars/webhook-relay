@@ -93,12 +93,30 @@ fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<M
         })
 }
 
-// --- Actix-Web Route Handlers ---
-
-/// Simple index page handler.
 #[get("/")]
-async fn index() -> HttpResponse {
-    HttpResponse::Ok().body("Hello from SSE broadcast relay service!")
+async fn index(
+    req: HttpRequest,
+    credentials: web::Data<(String, String)>,
+) -> HttpResponse {
+    let auth = req.headers().get("Authorization");
+
+    if auth.is_none() {
+        let mut response = HttpResponse::Unauthorized().finish();
+        response.headers_mut().insert(
+            actix_web::http::header::WWW_AUTHENTICATE,
+            actix_web::http::header::HeaderValue::from_static("Basic realm=\"401\""),
+        );
+        return response;
+    }
+
+    let (user, pass) = credentials.get_ref();
+    if let Some(auth) = auth {
+        let auth = auth.to_str().unwrap_or("");
+        if auth == format!("Basic {}", Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{}:{}", user, pass))) {
+            return HttpResponse::Ok().body("Hello from SSE broadcast relay service!");
+        }
+    }
+    HttpResponse::Unauthorized().body("Unauthorized")
 }
 
 /// Handles GET requests to receive messages from a specific SSE channel.
@@ -236,6 +254,8 @@ async fn main() -> std::io::Result<()> {
     let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
     let addr = format!("{}:{}", host, port);
+    let user = std::env::var("AUTH_USER").unwrap_or("user".to_string());
+    let pass = std::env::var("AUTH_PASS").unwrap_or("pass".to_string());
 
     // Initialize the global channels HashMap.
     // Arc enables shared ownership across threads, Mutex ensures exclusive access for modification.
@@ -248,6 +268,7 @@ async fn main() -> std::io::Result<()> {
         // `.clone()` is necessary because the closure is called multiple times (once per worker).
         App::new()
             .app_data(web::Data::new(channels.clone())) // Pass channels to the App
+            .app_data(web::Data::new((user.clone(), pass.clone()))) // Pass user and pass to the App
             .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
             .service(index)
             .service(relay_get)
