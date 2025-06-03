@@ -11,21 +11,28 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::{self, Sender};
 use tokio_stream::wrappers::BroadcastStream;
 
+#[macro_use]
+extern crate log;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Message {
     payload: String,
     headers: HashMap<String, String>,
 }
 
-/// Type alias for our global channels HashMap.
-/// The HashMap key is the channel ID (String), and the value is a broadcast::Sender<Message>
-/// used for sending SSE messages.
 type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Message>>>>;
 
-/// Formats a message into an SSE event string.
-fn format_sse_event(data: &str) -> String {
+fn format_webhook_event(data: &str) -> String {
     let data = Engine::encode(&base64::engine::general_purpose::STANDARD, data);
     format!("event: webhook\ndata: {}\n\n", data)
+}
+
+fn format_ping_event(data: &str) -> String {
+    format!("event: ping\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+}
+
+fn format_error_event(data: &str) -> String {
+    format!("event: error\ndata: {}\n\n", data)
 }
 
 // --- Channel Management Functions ---
@@ -44,14 +51,14 @@ fn get_or_create_stream_channel_stream(
         // Buffer size of 1024 means up to 1024 messages can be stored if not received.
         // If the buffer is full, sending will return an Err(SendError::Full).
         let (tx, _rx) = broadcast::channel::<Message>(1024);
-        println!("New broadcast channel '{}' created.", id);
+        info!("New broadcast channel '{}' created.", id);
         tx
     });
 
     // Subscribe a new receiver from the existing or newly created sender.
     // Each new client will get its own receiver here, ensuring all receive messages.
     let rx = sender.subscribe();
-    println!("Client subscribed to channel '{}'.", id);
+    info!("Client subscribed to channel '{}'.", id);
 
     // Convert the BroadcastStream into a `Stream<Item = Result<Bytes, Error>>`,
     // which is the expected Item type for `actix_web::body::BodyStream`.
@@ -59,17 +66,20 @@ fn get_or_create_stream_channel_stream(
         let formatted_bytes = match msg_result {
             Ok(msg) => {
                 let json_string = serde_json::to_string(&msg).unwrap_or_else(|e| {
-                        eprintln!("Failed to serialize Message: {}", e);
+                        debug!("Failed to serialize Message: {}", e);
                         // Return an error JSON if serialization fails
                         format!(r#"{{"error": "Failed to serialize message: {}"}}"#, e)
                     });
-                // Format the JSON string as an SSE event
-                format_sse_event(&json_string)
+                if msg.headers.len() > 0 {
+                    format_webhook_event(&json_string)
+                } else {
+                    format_ping_event(msg.payload.as_str())
+                }
             },
             Err(e) => {
                 // Handle receive errors (e.g., Lagged error if receiver falls too far behind)
-                eprintln!("Error receiving message for channel '{}': {}", id, e);
-                format_sse_event(&format!("Error: {}", e)) // Send an error message to the client
+                error!("Error receiving message for channel '{}': {}", id, e);
+                format_error_event(&format!("Error receiving message: {}", e))
             }
         };
         // Convert the String to web::Bytes as required by BodyStream
@@ -81,14 +91,14 @@ fn get_or_create_stream_channel_stream(
 /// This is called when a POST request is received to send a message to a channel.
 fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<Message>, Error> {
     let map = channels.lock().map_err(|e| {
-        eprintln!("Failed to lock channels: {}", e);
+        error!("Failed to lock channels: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to access channels")
     })?;
 
     map.get(&id)
         .cloned() // Get an owned copy of the Sender
         .ok_or_else(|| {
-            eprintln!("Broadcast channel '{}' not found for sending.", id);
+            error!("Broadcast channel '{}' not found for sending.", id);
             actix_web::error::ErrorNotFound(format!("Broadcast channel '{}' not found", id))
         })
 }
@@ -168,14 +178,14 @@ enum SignatureType {
 fn read_secret_key(id: &str) -> String {
     let secret_path = format!("secret/{}", id);
     std::fs::read_to_string(&secret_path).unwrap_or_else(|e| {
-        eprintln!("Failed to read secret key: {}", e);
+        error!("Failed to read secret key: {}", e);
         "".to_string()
     })
 }
 
 fn validate_signature(signature_type: SignatureType, expected_signature: &str, payload: &str, secret_key: &str) -> bool {
     if secret_key.is_empty() {
-        eprintln!("Error: Secret key is empty for channel '{}'.", expected_signature);
+        error!("Error: Secret key is empty for channel '{}'.", expected_signature);
         return false;
     }
     match signature_type {
@@ -239,7 +249,7 @@ async fn relay_post(
                 _ => (),
             }
         } else {
-            eprintln!("Warning: Header value for '{}' is not valid UTF-8.", key);
+            warn!("Warning: Header value for '{}' is not valid UTF-8.", key);
         }
     }
 
@@ -249,7 +259,7 @@ async fn relay_post(
         headers,
     };
 
-    println!("Received: {:#?}", message);
+    info!("Received: {:#?}", message);
 
     if !valid {
         return Err(actix_web::error::ErrorUnauthorized("Invalid signature"));
@@ -258,7 +268,7 @@ async fn relay_post(
     // Send the message to all subscribers of the broadcast channel.
     // `sender.send()` returns an `Err` if all receivers have been dropped or the channel is closed.
     if let Err(e) = sender.send(message) {
-        eprintln!("Failed to send message to broadcast channel: {}", e);
+        error!("Failed to send message to broadcast channel: {}", e);
         // In a more robust application, you might want to remove the channel from the HashMap here
         return Err(actix_web::error::ErrorInternalServerError(
             "Failed to broadcast message",
@@ -269,12 +279,14 @@ async fn relay_post(
 
 async fn not_found(req: HttpRequest) -> impl Responder {
     let path = req.uri().path();
-    eprintln!("{:?} {} Not Found", req, path);
+    error!("{:?} {} Not Found", req, path);
     HttpResponse::NotFound().body(format!("<h1>404 Not Found</h1>"))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    env_logger::init();
+
     // Environment variable configuration for host and port
     let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
@@ -286,12 +298,42 @@ async fn main() -> std::io::Result<()> {
     // Arc enables shared ownership across threads, Mutex ensures exclusive access for modification.
     let channels: GlobalChannels = Arc::new(Mutex::new(HashMap::new()));
 
-    println!("Starting Actix-Web broadcast SSE relay service on http://{}", addr);
+    info!("Starting webhook relay service on http://{}", addr);
 
+    let channels_for_tokio = channels.clone(); // Clone for the tokio::spawn block
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(7500));
+        loop {
+            interval.tick().await;
+            let channels_clone_inner = channels_for_tokio.clone(); // Clone for the inner tokio::spawn
+            tokio::spawn(async move {
+                let mut channels_guard = channels_clone_inner.lock().unwrap(); // Get a mutable lock
+
+                // Collect IDs to remove first to avoid issues with mutable and immutable borrows
+                let mut ids_to_remove = Vec::new();
+                for (id, sender) in channels_guard.iter() {
+                    if sender.receiver_count() == 0 {
+                        ids_to_remove.push(id.clone()); // Store the ID to remove later
+                    } else {
+                        _ = sender.send(Message {
+                            payload: format!("{}", sender.receiver_count()),
+                            headers: HashMap::new(),
+                        });
+                    }
+                }
+
+                // Now remove the collected IDs
+                for id in ids_to_remove {
+                    channels_guard.remove(&id);
+                    info!("Removed channel {}", id);
+                }
+            }).await.unwrap();
+        }
+    });
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(channels.clone())) // Pass channels to the App
-            .app_data(web::Data::new((user.clone(), pass.clone()))) // Pass user and pass to the App
+            .app_data(web::Data::new(channels.clone()))
+            .app_data(web::Data::new((user.clone(), pass.clone())))
             .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
             .service(favicon)
             .service(index)
@@ -301,8 +343,8 @@ async fn main() -> std::io::Result<()> {
             .default_service(web::to(not_found))
     })
     .bind(addr)?
-    .run()
-    .await
+        .run()
+        .await
 }
 
 #[cfg(test)]
