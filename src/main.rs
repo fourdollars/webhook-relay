@@ -31,12 +31,12 @@ use pkcs8::DecodePublicKey;
 extern crate log;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct Message {
-    payload: String,
+struct Payload {
+    body: String,
     headers: HashMap<String, String>,
 }
 
-type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Message>>>>;
+type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Payload>>>>;
 
 fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<String, Error> {
     let public_key_pem = fs::read_to_string(public_key_path)?;
@@ -50,8 +50,8 @@ fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<St
     match public_key.encrypt(&mut OsRng, padding, to_encrypt) {
         Ok(encrypted) => Ok(general_purpose::STANDARD.encode(encrypted)),
         Err(e) => {
-            error!("Failed to encrypt message: {}", e);
-            Err(actix_web::error::ErrorInternalServerError("Failed to encrypt message"))
+            error!("Failed to encrypt payload: {}", e);
+            Err(actix_web::error::ErrorInternalServerError("Failed to encrypt payload"))
         }
     }
 }
@@ -70,8 +70,8 @@ fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Er
     let ciphertext = match cipher.encrypt(nonce, text.as_bytes()) {
         Ok(ciphertext) => ciphertext,
         Err(e) => {
-            error!("Failed to encrypt message: {}", e);
-            return Err(actix_web::error::ErrorInternalServerError("Failed to encrypt message"));
+            error!("Failed to encrypt payload: {}", e);
+            return Err(actix_web::error::ErrorInternalServerError("Failed to encrypt payload"));
         }
     };
 
@@ -92,7 +92,7 @@ fn format_encrypted_event(data: &str, id: &str) -> String {
             format!("event: encrypted\ndata: {}\nid: {}\n\n", encrypted_string, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
         }
         Err(e) => {
-            error!("Failed to encrypt message: {}", e);
+            error!("Failed to encrypt payload: {}", e);
             String::new()
         }
     }
@@ -124,29 +124,29 @@ fn get_or_create_stream_channel_stream(
 
     let sender = map.entry(id.clone()).or_insert_with(|| {
         // If no channel exists for this ID, create a new broadcast channel.
-        // Buffer size of 1024 means up to 1024 messages can be stored if not received.
+        // Buffer size of 1024 means up to 1024 payloads can be stored if not received.
         // If the buffer is full, sending will return an Err(SendError::Full).
-        let (tx, _rx) = broadcast::channel::<Message>(1024);
+        let (tx, _rx) = broadcast::channel::<Payload>(1024);
         info!("New broadcast channel '{}' created.", id);
         tx
     });
 
     // Subscribe a new receiver from the existing or newly created sender.
-    // Each new client will get its own receiver here, ensuring all receive messages.
+    // Each new client will get its own receiver here, ensuring all receive payloads.
     let rx = sender.subscribe();
     info!("Client subscribed to channel '{}'.", id);
 
     // Convert the BroadcastStream into a `Stream<Item = Result<Bytes, Error>>`,
     // which is the expected Item type for `actix_web::body::BodyStream`.
-    BroadcastStream::new(rx).map(move |msg_result| {
-        let formatted_bytes = match msg_result {
-            Ok(msg) => {
-                let json_string = serde_json::to_string(&msg).unwrap_or_else(|e| {
-                        debug!("Failed to serialize Message: {}", e);
+    BroadcastStream::new(rx).map(move |result| {
+        let formatted_bytes = match result {
+            Ok(payload) => {
+                let json_string = serde_json::to_string(&payload).unwrap_or_else(|e| {
+                        debug!("Failed to serialize Payload: {}", e);
                         // Return an error JSON if serialization fails
-                        format!(r#"{{"error": "Failed to serialize message: {}"}}"#, e)
+                        format!(r#"{{"error": "Failed to serialize payload: {}"}}"#, e)
                     });
-                if msg.headers.len() > 0 {
+                if payload.headers.len() > 0 {
                     let encrypted = format_encrypted_event(&json_string, &id);
                     if encrypted.len() > 0 {
                         encrypted
@@ -154,13 +154,13 @@ fn get_or_create_stream_channel_stream(
                         format_webhook_event(&json_string)
                     }
                 } else {
-                    format_ping_event(msg.payload.as_str())
+                    format_ping_event(payload.body.as_str())
                 }
             },
             Err(e) => {
                 // Handle receive errors (e.g., Lagged error if receiver falls too far behind)
-                error!("Error receiving message for channel '{}': {}", id, e);
-                format_error_event(&format!("Error receiving message: {}", e))
+                error!("Error receiving payload for channel '{}': {}", id, e);
+                format_error_event(&format!("Error receiving payload: {}", e))
             }
         };
         // Convert the String to web::Bytes as required by BodyStream
@@ -169,8 +169,8 @@ fn get_or_create_stream_channel_stream(
 }
 
 /// Gets the existing SSE stream channel's sender.
-/// This is called when a POST request is received to send a message to a channel.
-fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<Message>, Error> {
+/// This is called when a POST request is received to send a payload to a channel.
+fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<Payload>, Error> {
     let map = channels.lock().map_err(|e| {
         error!("Failed to lock channels: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to access channels")
@@ -297,7 +297,7 @@ fn validate_signature(signature_type: SignatureType, expected_signature: &str, p
     true
 }
 
-/// Handles POST requests to broadcast a message to a specific SSE channel.
+/// Handles POST requests to broadcast a payload to a specific SSE channel.
 #[post("/{id}")]
 async fn relay_post(
     req: HttpRequest,
@@ -334,25 +334,25 @@ async fn relay_post(
         }
     }
 
-    // Create the Message instance
-    let message = Message {
-        payload: data,
+    // Create the Payload instance
+    let payload = Payload {
+        body: data,
         headers,
     };
 
-    info!("Received: {:#?}", message);
+    info!("Received: {:#?}", payload);
 
     if !valid {
         return Err(actix_web::error::ErrorUnauthorized("Invalid signature"));
     }
 
-    // Send the message to all subscribers of the broadcast channel.
+    // Send the payload to all subscribers of the broadcast channel.
     // `sender.send()` returns an `Err` if all receivers have been dropped or the channel is closed.
-    if let Err(e) = sender.send(message) {
-        error!("Failed to send message to broadcast channel: {}", e);
+    if let Err(e) = sender.send(payload) {
+        error!("Failed to send payload to broadcast channel: {}", e);
         // In a more robust application, you might want to remove the channel from the HashMap here
         return Err(actix_web::error::ErrorInternalServerError(
-            "Failed to broadcast message",
+            "Failed to broadcast payload",
         ));
     }
     Ok(HttpResponse::Ok().finish())
@@ -396,8 +396,8 @@ async fn main() -> std::io::Result<()> {
                     if sender.receiver_count() == 0 {
                         ids_to_remove.push(id.clone()); // Store the ID to remove later
                     } else {
-                        _ = sender.send(Message {
-                            payload: format!("{}", sender.receiver_count()),
+                        _ = sender.send(Payload {
+                            body: format!("{}", sender.receiver_count()),
                             headers: HashMap::new(),
                         });
                     }
