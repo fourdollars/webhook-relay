@@ -431,6 +431,121 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::RsaPrivateKey;
+    use pkcs8::DecodePrivateKey;
+
+    #[derive(Debug)]
+    enum AppError {
+        Crypto(aes_gcm::Error),
+        Io(std::io::Error),
+        Rsa(rsa::Error),
+        Pkcs8(pkcs8::Error),
+        Base64(base64::DecodeError),
+        Other(String),
+    }
+
+    impl std::fmt::Display for AppError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                AppError::Crypto(err) => write!(f, "Cryptographic error: {}", err),
+                AppError::Io(err) => write!(f, "IO error: {}", err),
+                AppError::Rsa(err) => write!(f, "RSA error: {}", err),
+                AppError::Pkcs8(err) => write!(f, "PKCS8 error: {}", err),
+                AppError::Base64(err) => write!(f, "Base64 decode error: {}", err),
+                AppError::Other(err) => write!(f, "Other error: {}", err),
+            }
+        }
+    }
+
+    impl std::error::Error for AppError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                AppError::Crypto(_) => None,
+                AppError::Io(err) => Some(err),
+                AppError::Rsa(err) => Some(err),
+                AppError::Pkcs8(err) => Some(err),
+                AppError::Base64(err) => Some(err),
+                AppError::Other(_) => None,
+            }
+        }
+    }
+
+    impl From<aes_gcm::Error> for AppError {
+        fn from(err: aes_gcm::Error) -> Self {
+            AppError::Crypto(err)
+        }
+    }
+
+    impl From<std::io::Error> for AppError {
+        fn from(err: std::io::Error) -> Self {
+            AppError::Io(err)
+        }
+    }
+
+    impl From<rsa::Error> for AppError {
+        fn from(err: rsa::Error) -> Self {
+            AppError::Rsa(err)
+        }
+    }
+
+    impl From<pkcs8::Error> for AppError {
+        fn from(err: pkcs8::Error) -> Self {
+            AppError::Pkcs8(err)
+        }
+    }
+
+    impl From<base64::DecodeError> for AppError {
+        fn from(err: base64::DecodeError) -> Self {
+            AppError::Base64(err)
+        }
+    }
+
+    fn decrypt_asymmetric(to_decrypt_base64: &str, private_key_path: &PathBuf) -> Result<Vec<u8>, AppError> {
+        let private_key_pem = fs::read_to_string(private_key_path)?;
+        let private_key = RsaPrivateKey::from_pkcs8_pem(&private_key_pem)
+            .map_err(|e| AppError::Pkcs8(e.into()))?;
+
+        let encrypted_bytes = general_purpose::STANDARD.decode(to_decrypt_base64)?;
+
+        let padding = Pkcs1v15Encrypt;
+        let decrypted = private_key.decrypt(padding, &encrypted_bytes)?;
+        Ok(decrypted)
+    }
+
+    fn decrypt_symmetric(encrypted_string: &str, private_key_path: &PathBuf) -> Result<String, AppError> {
+        let parts: Vec<&str> = encrypted_string.split(':').collect();
+        if parts.len() != 3 {
+            return Err(AppError::Other("Invalid encrypted string format".to_string()));
+        }
+
+        let encrypted_symmetric_key_base64 = parts[0];
+        let nonce_base64 = parts[1];
+        let ciphertext_base64 = parts[2];
+
+        // 1. Decrypt the symmetric key using asymmetric decryption
+        let decrypted_symmetric_key_bytes = decrypt_asymmetric(encrypted_symmetric_key_base64, private_key_path)?;
+        let key = Key::<Aes256Gcm>::from_slice(&decrypted_symmetric_key_bytes);
+        let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new(key);
+
+        // 2. Decode Nonce and ciphertext
+        let nonce_bytes = general_purpose::STANDARD.decode(nonce_base64)?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = general_purpose::STANDARD.decode(ciphertext_base64)?;
+
+        // 3. Decrypt the ciphertext
+        let decrypted_text_bytes = cipher.decrypt(nonce, ciphertext.as_ref())?;
+        Ok(String::from_utf8(decrypted_text_bytes)
+            .map_err(|e| AppError::Other(format!("UTF-8 decode error: {}", e)))?)
+    }
+    #[test]
+    fn test_encrypted_decrypted() {
+        let public_key_path = PathBuf::from("tests/public_key.pem");
+        let private_key_path = PathBuf::from("tests/private_key.pem");
+        let original_plaintext = "This is a secret message used for testing encryption and decryption!";
+        let encrypted_string = encrypt_symmetric(original_plaintext, &public_key_path).unwrap();
+        let decrypted_plaintext = decrypt_symmetric(&encrypted_string, &private_key_path).unwrap();
+        assert_eq!(original_plaintext, decrypted_plaintext);
+    }
     #[test]
     fn test_x_hub_signature() {
         let secret_key = "secret";
