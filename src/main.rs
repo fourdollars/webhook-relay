@@ -1,15 +1,31 @@
-use actix_web::body::BodyStream;
-use actix_web::{get, post, web, App, Error, HttpResponse, HttpRequest, HttpServer, Responder, middleware::NormalizePath};
-use base64::Engine;
+use actix_web::{
+    body::BodyStream,
+    get, post, web, App, Error,
+    HttpResponse, HttpRequest, HttpServer,
+    Responder, middleware::NormalizePath
+};
+use aes_gcm::{
+    aead::Aead,
+    Aes256Gcm, Nonce, Key,
+};
+use base64::{engine::general_purpose, Engine as _};
 use futures_util::stream::StreamExt;
 use hmac::{Hmac, Mac};
+use rsa::{
+    pkcs1v15::Pkcs1v15Encrypt,
+    RsaPublicKey,
+};
+use rand_core::{OsRng, RngCore};
 use serde::{Serialize, Deserialize};
 use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::{self, Sender};
 use tokio_stream::wrappers::BroadcastStream;
+use pkcs8::DecodePublicKey;
 
 #[macro_use]
 extern crate log;
@@ -22,8 +38,68 @@ struct Message {
 
 type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Message>>>>;
 
+fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<String, Error> {
+    let public_key_pem = fs::read_to_string(public_key_path)?;
+    let public_key = RsaPublicKey::from_public_key_pem(&public_key_pem)
+        .map_err(|e| {
+            error!("Failed to parse public key: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to parse public key")
+        })?;
+
+    let padding = Pkcs1v15Encrypt;
+    match public_key.encrypt(&mut OsRng, padding, to_encrypt) {
+        Ok(encrypted) => Ok(general_purpose::STANDARD.encode(encrypted)),
+        Err(e) => {
+            error!("Failed to encrypt message: {}", e);
+            Err(actix_web::error::ErrorInternalServerError("Failed to encrypt message"))
+        }
+    }
+}
+
+fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Error> {
+    let mut key_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut key_bytes);
+
+    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new(key);
+
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = match cipher.encrypt(nonce, text.as_bytes()) {
+        Ok(ciphertext) => ciphertext,
+        Err(e) => {
+            error!("Failed to encrypt message: {}", e);
+            return Err(actix_web::error::ErrorInternalServerError("Failed to encrypt message"));
+        }
+    };
+
+    let encrypted_symmetric_key = encrypt_asymmetric(&key_bytes, public_key_path)?;
+
+    Ok(format!(
+        "{}:{}:{}",
+        encrypted_symmetric_key,
+        general_purpose::STANDARD.encode(&nonce_bytes),
+        general_purpose::STANDARD.encode(&ciphertext)
+    ))
+}
+
+fn format_encrypted_event(data: &str, id: &str) -> String {
+    let public_key_path = PathBuf::from(format!("pem/{}", id));
+    match encrypt_symmetric(data, &public_key_path) {
+        Ok(encrypted_string) => {
+            format!("event: encrypted\ndata: {}\nid: {}\n\n", encrypted_string, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+        }
+        Err(e) => {
+            error!("Failed to encrypt message: {}", e);
+            String::new()
+        }
+    }
+}
+
 fn format_webhook_event(data: &str) -> String {
-    let data = Engine::encode(&base64::engine::general_purpose::STANDARD, data);
+    let data = general_purpose::STANDARD.encode(data);
     format!("event: webhook\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
 }
 
@@ -71,7 +147,12 @@ fn get_or_create_stream_channel_stream(
                         format!(r#"{{"error": "Failed to serialize message: {}"}}"#, e)
                     });
                 if msg.headers.len() > 0 {
-                    format_webhook_event(&json_string)
+                    let encrypted = format_encrypted_event(&json_string, &id);
+                    if encrypted.len() > 0 {
+                        encrypted
+                    } else {
+                        format_webhook_event(&json_string)
+                    }
                 } else {
                     format_ping_event(msg.payload.as_str())
                 }
@@ -137,7 +218,7 @@ async fn admin(
     let (user, pass) = credentials.get_ref();
     if let Some(auth) = auth {
         let auth = auth.to_str().unwrap_or("");
-        if auth == format!("Basic {}", Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{}:{}", user, pass))) {
+        if auth == format!("Basic {}", general_purpose::STANDARD.encode(format!("{}:{}", user, pass))) {
             let content = format!("<html><body><h1>Channels</h1><ul>{}</ul></body></html>", list_channels_page(channels_data.get_ref().clone()));
             return HttpResponse::Ok().body(content);
         }
@@ -175,7 +256,7 @@ enum SignatureType {
     XLineSignature,
 }
 
-fn read_secret_key(id: &str) -> String {
+fn get_secret_key(id: &str) -> String {
     let secret_path = format!("secret/{}", id);
     std::fs::read_to_string(&secret_path).unwrap_or_else(|e| {
         error!("Failed to read secret key: {}", e);
@@ -190,7 +271,7 @@ fn validate_signature(signature_type: SignatureType, expected_signature: &str, p
     }
     match signature_type {
         SignatureType::XHubSignature => {
-            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size");
+            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
             mac.update(payload.as_bytes());
             let signature_bytes = mac.finalize().into_bytes();
             let signature = format!("sha1={}", hex::encode(signature_bytes));
@@ -204,10 +285,10 @@ fn validate_signature(signature_type: SignatureType, expected_signature: &str, p
             }
         },
         SignatureType::XLineSignature => {
-            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size");
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
             mac.update(payload.as_bytes());
             let signature_bytes = mac.finalize().into_bytes();
-            let signature = format!("sha256={}", Engine::encode(&base64::engine::general_purpose::STANDARD, signature_bytes));
+            let signature = format!("sha256={}", general_purpose::STANDARD.encode(signature_bytes));
             if signature != expected_signature {
                 return false;
             }
@@ -243,9 +324,9 @@ async fn relay_post(
         if let Ok(value_str) = value.to_str() {
             headers.insert(key.to_string(), value_str.to_string());
             match key.as_str() {
-                "x-hub-signature" => valid = validate_signature(SignatureType::XHubSignature, value_str, &data, &read_secret_key(&id)),
-                "x-gitlab-token" => valid = validate_signature(SignatureType::XGitlabToken, value_str, &data, &read_secret_key(&id)),
-                "x-line-signature" => valid = validate_signature(SignatureType::XLineSignature, value_str, &data, &read_secret_key(&id)),
+                "x-hub-signature" => valid = validate_signature(SignatureType::XHubSignature, value_str, &data, &get_secret_key(&id)),
+                "x-gitlab-token" => valid = validate_signature(SignatureType::XGitlabToken, value_str, &data, &get_secret_key(&id)),
+                "x-line-signature" => valid = validate_signature(SignatureType::XLineSignature, value_str, &data, &get_secret_key(&id)),
                 _ => (),
             }
         } else {
@@ -355,8 +436,7 @@ mod tests {
         let secret_key = "secret";
         let payload = "payload";
 
-        let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
-            .expect("HMAC can take any key size in test");
+        let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
         mac.update(payload.as_bytes());
         let signature_bytes = mac.finalize().into_bytes();
         let calculated_signature = format!("sha1={}", hex::encode(signature_bytes));
@@ -365,7 +445,7 @@ mod tests {
 
         let signature_type = SignatureType::XHubSignature;
         let valid = validate_signature(signature_type, expected_signature, payload, secret_key);
-        assert!(valid, "X-Hub-Signature validation failed: calculated '{}', expected '{}'", calculated_signature, expected_signature);
+        assert!(valid, "X-Hub-Signature validation failed: calculated '{:?}', expected '{:?}'", calculated_signature, expected_signature);
     }
     #[test]
     fn test_x_gitlab_token() {
@@ -380,11 +460,10 @@ mod tests {
         let secret_key = "secret";
         let payload = "payload";
 
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())
-            .expect("HMAC can take any key size in test");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
         mac.update(payload.as_bytes());
         let signature_bytes = mac.finalize().into_bytes();
-        let calculated_signature = format!("sha256={}", Engine::encode(&base64::engine::general_purpose::STANDARD, signature_bytes));
+        let calculated_signature = format!("sha256={}", general_purpose::STANDARD.encode(signature_bytes));
 
         let expected_signature = &calculated_signature;
 
