@@ -33,7 +33,7 @@ extern crate log;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Payload {
     body: String,
-    headers: HashMap<String, String>,
+    headers: String,
 }
 
 type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Payload>>>>;
@@ -337,7 +337,7 @@ async fn relay_post(
     // Create the Payload instance
     let payload = Payload {
         body: data,
-        headers,
+        headers: serde_json::to_string(&headers).unwrap(),
     };
 
     info!("Received: {:#?}", payload);
@@ -398,7 +398,7 @@ async fn main() -> std::io::Result<()> {
                     } else {
                         _ = sender.send(Payload {
                             body: format!("{}", sender.receiver_count()),
-                            headers: HashMap::new(),
+                            headers: "".to_string(),
                         });
                     }
                 }
