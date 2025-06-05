@@ -9,6 +9,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce, Key,
 };
 use base64::{engine::general_purpose, Engine as _};
+use chrono::Utc;
 use futures_util::stream::StreamExt;
 use hmac::{Hmac, Mac};
 use rsa::{
@@ -17,6 +18,7 @@ use rsa::{
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Serialize, Deserialize};
+use serde_json::Value;
 use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -147,6 +149,25 @@ fn get_or_create_stream_channel_stream(
                         format!(r#"{{"error": "Failed to serialize payload: {}"}}"#, e)
                     });
                 if payload.headers.len() > 0 {
+                    println!("{} {}", Utc::now(), &id);
+                    if let Ok(headers_value) = serde_json::from_str::<Value>(payload.headers.as_str()) {
+                        if let Ok(headers) = serde_json::to_string_pretty(&headers_value) {
+                            println!("{}", headers);
+                        } else {
+                            println!("Failed to serialize headers: {}", payload.headers);
+                        }
+                    } else {
+                        println!("Failed to deserialize headers: {}", payload.headers);
+                    }
+                    if let Ok(body_value) = serde_json::from_str::<Value>(payload.body.as_str()) {
+                        if let Ok(body) = serde_json::to_string_pretty(&body_value) {
+                            println!("{}", body);
+                        } else {
+                            println!("Failed to serialize body: {}", payload.body);
+                        }
+                    } else {
+                        println!("Failed to deserialize body: {}", payload.body);
+                    }
                     let encrypted = format_encrypted_event(&json_string, &id);
                     if encrypted.len() > 0 {
                         encrypted
