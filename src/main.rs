@@ -205,13 +205,24 @@ fn get_broadcast_sender(id: String, channels: GlobalChannels) -> Result<Sender<P
         })
 }
 
-fn list_channels_page(channels: GlobalChannels) -> String {
+fn list_channels_page(public_path: &str, channels: GlobalChannels) -> String {
     let mut content = String::new();
     let map = channels.lock().unwrap();
     for (id, sender) in map.iter() {
-        content.push_str(&format!("<li><a href=\"/{}\">{}/{}</a></li>", id, id, sender.receiver_count()));
+        let num_clients = match sender.receiver_count() {
+            1 => "1 client".to_string(),
+            n => format!("{} clients", n),
+        };
+        content.push_str(&format!("<li><a href=\"{}/{}\">{}</a> ({})</li>", public_path, id, id, num_clients));
     }
     content
+}
+
+struct AppState {
+    channels: GlobalChannels,
+    pass: String,
+    public_path: String,
+    user: String,
 }
 
 #[get("/")]
@@ -222,8 +233,7 @@ async fn index() -> impl Responder {
 #[get("/admin")]
 async fn admin(
     req: HttpRequest,
-    credentials: web::Data<(String, String)>,
-    channels_data: web::Data<GlobalChannels>,
+    data: web::Data<AppState>,
 ) -> HttpResponse {
     let auth = req.headers().get("Authorization");
 
@@ -236,11 +246,10 @@ async fn admin(
         return response;
     }
 
-    let (user, pass) = credentials.get_ref();
     if let Some(auth) = auth {
         let auth = auth.to_str().unwrap_or("");
-        if auth == format!("Basic {}", general_purpose::STANDARD.encode(format!("{}:{}", user, pass))) {
-            let content = format!("<html><body><h1>Channels</h1><ul>{}</ul></body></html>", list_channels_page(channels_data.get_ref().clone()));
+        if auth == format!("Basic {}", general_purpose::STANDARD.encode(format!("{}:{}", data.user, data.pass))) {
+            let content = format!("<html><body><h1>Channels</h1><ul>{}</ul></body></html>", list_channels_page(&data.public_path, data.channels.clone()));
             return HttpResponse::Ok().body(content);
         }
     }
@@ -255,7 +264,7 @@ async fn favicon() -> impl Responder {
 #[get("/{id}")]
 async fn relay_get(
     id: web::Path<String>,
-    channels_data: web::Data<GlobalChannels>,
+    data: web::Data<AppState>,
 ) -> HttpResponse {
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return HttpResponse::BadRequest().body("Invalid channel ID");
@@ -267,7 +276,7 @@ async fn relay_get(
         .insert_header(("Connection", "keep-alive"));
 
     res_builder.body(BodyStream::new(
-        get_or_create_stream_channel_stream(id.into_inner(), channels_data.get_ref().clone()),
+        get_or_create_stream_channel_stream(id.into_inner(), data.channels.clone()),
     ))
 }
 
@@ -324,12 +333,12 @@ async fn relay_post(
     req: HttpRequest,
     id: web::Path<String>,
     mut payload: web::Payload,
-    channels_data: web::Data<GlobalChannels>, // Injects the global channels data
+    data: web::Data<AppState>,
 ) -> Result<HttpResponse, Error> {
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Ok(HttpResponse::BadRequest().body("Invalid channel ID"));
     }
-    let sender = get_broadcast_sender(id.clone(), channels_data.get_ref().clone())?;
+    let sender = get_broadcast_sender(id.clone(), data.channels.clone())?;
     let mut data = String::new();
 
     // Iterate over the payload chunks to read the incoming data.
@@ -395,12 +404,14 @@ async fn main() -> std::io::Result<()> {
     let addr = format!("{}:{}", host, port);
     let user = std::env::var("AUTH_USER").unwrap_or("user".to_string());
     let pass = std::env::var("AUTH_PASS").unwrap_or("pass".to_string());
+    let public_path = std::env::var("APP_PUBLIC_PATH").unwrap_or_else(|_| "".to_string());
+    let base_path = std::env::var("APP_BASE_PATH").unwrap_or_else(|_| "".to_string());
+
+    info!("Starting webhook relay service on http://{}{}", addr, public_path);
 
     // Initialize the global channels HashMap.
     // Arc enables shared ownership across threads, Mutex ensures exclusive access for modification.
     let channels: GlobalChannels = Arc::new(Mutex::new(HashMap::new()));
-
-    info!("Starting webhook relay service on http://{}", addr);
 
     let channels_for_tokio = channels.clone(); // Clone for the tokio::spawn block
     tokio::spawn(async move {
@@ -432,17 +443,27 @@ async fn main() -> std::io::Result<()> {
             }).await.unwrap();
         }
     });
+
+    let app_state = web::Data::new(AppState {
+        channels: channels.clone(),
+        pass: pass.clone(),
+        public_path: public_path.clone(),
+        user: user.clone(),
+    });
+
     HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(channels.clone()))
-            .app_data(web::Data::new((user.clone(), pass.clone())))
-            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
-            .service(favicon)
-            .service(index)
-            .service(admin)
-            .service(relay_get)
-            .service(relay_post)
-            .default_service(web::to(not_found))
+        let app = App::new()
+            .app_data(app_state.clone())
+            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim));
+        app.service(
+            web::scope(&base_path)
+                .service(favicon)
+                .service(index)
+                .service(admin)
+                .service(relay_get)
+                .service(relay_post)
+                .default_service(web::to(not_found))
+        )
     })
     .bind(addr)?
         .run()
