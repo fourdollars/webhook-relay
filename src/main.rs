@@ -452,22 +452,20 @@ async fn main() -> std::io::Result<()> {
     });
 
     HttpServer::new(move || {
-        let app = App::new()
+        App::new()
             .app_data(app_state.clone())
-            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim));
-        app.service(
-            web::scope(&base_path)
-                .service(favicon)
-                .service(index)
-                .service(admin)
-                .service(relay_get)
-                .service(relay_post)
-                .default_service(web::to(not_found))
-        )
+            .service(index)
+            .service(favicon)
+            .service(admin)
+            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
+            .service(
+                web::scope(&base_path)
+                    .service(relay_get)
+                    .service(relay_post)
+            )
+            .default_service(web::to(not_found))
     })
-    .bind(addr)?
-        .run()
-        .await
+    .bind(addr)?.run().await
 }
 
 #[cfg(test)]
