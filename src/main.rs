@@ -1,23 +1,16 @@
 use actix_web::{
-    body::BodyStream,
-    get, post, web, App, Error,
-    HttpResponse, HttpRequest, HttpServer,
-    Responder, middleware::NormalizePath
+    App, Error, HttpRequest, HttpResponse, HttpServer, Responder, body::BodyStream, get,
+    middleware::NormalizePath, post, web,
 };
-use aes_gcm::{
-    aead::Aead,
-    Aes256Gcm, Nonce, Key,
-};
-use base64::{engine::general_purpose, Engine as _};
+use aes_gcm::{Aes256Gcm, Key, Nonce, aead::Aead};
+use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
 use futures_util::stream::StreamExt;
 use hmac::{Hmac, Mac};
-use rsa::{
-    pkcs1v15::Pkcs1v15Encrypt,
-    RsaPublicKey,
-};
+use pkcs8::DecodePublicKey;
 use rand_core::{OsRng, RngCore};
-use serde::{Serialize, Deserialize};
+use rsa::{RsaPublicKey, pkcs1v15::Pkcs1v15Encrypt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::Sha1;
 use sha2::Sha256;
@@ -27,7 +20,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::{self, Sender};
 use tokio_stream::wrappers::BroadcastStream;
-use pkcs8::DecodePublicKey;
 
 #[macro_use]
 extern crate log;
@@ -42,18 +34,19 @@ type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Payload>>>>;
 
 fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<String, Error> {
     let public_key_pem = fs::read_to_string(public_key_path)?;
-    let public_key = RsaPublicKey::from_public_key_pem(&public_key_pem)
-        .map_err(|e| {
-            error!("Failed to parse public key: {}", e);
-            actix_web::error::ErrorInternalServerError("Failed to parse public key")
-        })?;
+    let public_key = RsaPublicKey::from_public_key_pem(&public_key_pem).map_err(|e| {
+        error!("Failed to parse public key: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to parse public key")
+    })?;
 
     let padding = Pkcs1v15Encrypt;
     match public_key.encrypt(&mut OsRng, padding, to_encrypt) {
         Ok(encrypted) => Ok(general_purpose::STANDARD.encode(encrypted)),
         Err(e) => {
             error!("Failed to encrypt payload: {}", e);
-            Err(actix_web::error::ErrorInternalServerError("Failed to encrypt payload"))
+            Err(actix_web::error::ErrorInternalServerError(
+                "Failed to encrypt payload",
+            ))
         }
     }
 }
@@ -73,7 +66,9 @@ fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Er
         Ok(ciphertext) => ciphertext,
         Err(e) => {
             error!("Failed to encrypt payload: {}", e);
-            return Err(actix_web::error::ErrorInternalServerError("Failed to encrypt payload"));
+            return Err(actix_web::error::ErrorInternalServerError(
+                "Failed to encrypt payload",
+            ));
         }
     };
 
@@ -91,7 +86,14 @@ fn format_encrypted_event(data: &str, id: &str) -> String {
     let public_key_path = PathBuf::from(format!("pem/{}", id));
     match encrypt_symmetric(data, &public_key_path) {
         Ok(encrypted_string) => {
-            format!("event: encrypted\ndata: {}\nid: {}\n\n", encrypted_string, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+            format!(
+                "event: encrypted\ndata: {}\nid: {}\n\n",
+                encrypted_string,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            )
         }
         Err(e) => {
             error!("Failed to encrypt payload: {}", e);
@@ -102,15 +104,36 @@ fn format_encrypted_event(data: &str, id: &str) -> String {
 
 fn format_webhook_event(data: &str) -> String {
     let data = general_purpose::STANDARD.encode(data);
-    format!("event: webhook\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+    format!(
+        "event: webhook\ndata: {}\nid: {}\n\n",
+        data,
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    )
 }
 
 fn format_ping_event(data: &str) -> String {
-    format!("event: ping\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+    format!(
+        "event: ping\ndata: {}\nid: {}\n\n",
+        data,
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    )
 }
 
 fn format_error_event(data: &str) -> String {
-    format!("event: error\ndata: {}\nid: {}\n\n", data, std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis())
+    format!(
+        "event: error\ndata: {}\nid: {}\n\n",
+        data,
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    )
 }
 
 // --- Channel Management Functions ---
@@ -144,13 +167,15 @@ fn get_or_create_stream_channel_stream(
         let formatted_bytes = match result {
             Ok(payload) => {
                 let json_string = serde_json::to_string(&payload).unwrap_or_else(|e| {
-                        debug!("Failed to serialize Payload: {}", e);
-                        // Return an error JSON if serialization fails
-                        format!(r#"{{"error": "Failed to serialize payload: {}"}}"#, e)
-                    });
+                    debug!("Failed to serialize Payload: {}", e);
+                    // Return an error JSON if serialization fails
+                    format!(r#"{{"error": "Failed to serialize payload: {}"}}"#, e)
+                });
                 if payload.headers.len() > 0 {
                     println!("{} {}", Utc::now(), &id);
-                    if let Ok(headers_value) = serde_json::from_str::<Value>(payload.headers.as_str()) {
+                    if let Ok(headers_value) =
+                        serde_json::from_str::<Value>(payload.headers.as_str())
+                    {
                         if let Ok(headers) = serde_json::to_string_pretty(&headers_value) {
                             println!("{}", headers);
                         } else {
@@ -177,7 +202,7 @@ fn get_or_create_stream_channel_stream(
                 } else {
                     format_ping_event(payload.body.as_str())
                 }
-            },
+            }
             Err(e) => {
                 // Handle receive errors (e.g., Lagged error if receiver falls too far behind)
                 error!("Error receiving payload for channel '{}': {}", id, e);
@@ -213,7 +238,10 @@ fn list_channels_page(public_path: &str, channels: GlobalChannels) -> String {
             1 => "1 client".to_string(),
             n => format!("{} clients", n),
         };
-        content.push_str(&format!("<li><a href=\"{}/{}\">{}</a> ({})</li>", public_path, id, id, num_clients));
+        content.push_str(&format!(
+            "<li><a href=\"{}/{}\">{}</a> ({})</li>",
+            public_path, id, id, num_clients
+        ));
     }
     content
 }
@@ -231,10 +259,7 @@ async fn index() -> impl Responder {
 }
 
 #[get("/admin")]
-async fn admin(
-    req: HttpRequest,
-    data: web::Data<AppState>,
-) -> HttpResponse {
+async fn admin(req: HttpRequest, data: web::Data<AppState>) -> HttpResponse {
     let auth = req.headers().get("Authorization");
 
     if auth.is_none() {
@@ -248,8 +273,16 @@ async fn admin(
 
     if let Some(auth) = auth {
         let auth = auth.to_str().unwrap_or("");
-        if auth == format!("Basic {}", general_purpose::STANDARD.encode(format!("{}:{}", data.user, data.pass))) {
-            let content = format!("<html><body><h1>Channels</h1><ul>{}</ul></body></html>", list_channels_page(&data.public_path, data.channels.clone()));
+        if auth
+            == format!(
+                "Basic {}",
+                general_purpose::STANDARD.encode(format!("{}:{}", data.user, data.pass))
+            )
+        {
+            let content = format!(
+                "<html><body><h1>Channels</h1><ul>{}</ul></body></html>",
+                list_channels_page(&data.public_path, data.channels.clone())
+            );
             return HttpResponse::Ok().body(content);
         }
     }
@@ -262,10 +295,7 @@ async fn favicon() -> impl Responder {
 }
 
 #[get("/{id}")]
-async fn relay_get(
-    id: web::Path<String>,
-    data: web::Data<AppState>,
-) -> HttpResponse {
+async fn relay_get(id: web::Path<String>, data: web::Data<AppState>) -> HttpResponse {
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return HttpResponse::BadRequest().body("Invalid channel ID");
     }
@@ -275,9 +305,10 @@ async fn relay_get(
         .insert_header(("Cache-Control", "no-cache"))
         .insert_header(("Connection", "keep-alive"));
 
-    res_builder.body(BodyStream::new(
-        get_or_create_stream_channel_stream(id.into_inner(), data.channels.clone()),
-    ))
+    res_builder.body(BodyStream::new(get_or_create_stream_channel_stream(
+        id.into_inner(),
+        data.channels.clone(),
+    )))
 }
 
 enum SignatureType {
@@ -294,35 +325,48 @@ fn get_secret_key(id: &str) -> String {
     })
 }
 
-fn validate_signature(signature_type: SignatureType, expected_signature: &str, payload: &str, secret_key: &str) -> bool {
+fn validate_signature(
+    signature_type: SignatureType,
+    expected_signature: &str,
+    payload: &str,
+    secret_key: &str,
+) -> bool {
     if secret_key.is_empty() {
-        error!("Error: Secret key is empty for channel '{}'.", expected_signature);
+        error!(
+            "Error: Secret key is empty for channel '{}'.",
+            expected_signature
+        );
         return false;
     }
     match signature_type {
         SignatureType::XHubSignature => {
-            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
+            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
+                .expect("HMAC can take any key size in test");
             mac.update(payload.as_bytes());
             let signature_bytes = mac.finalize().into_bytes();
             let signature = format!("sha1={}", hex::encode(signature_bytes));
             if signature != expected_signature {
                 return false;
             }
-        },
+        }
         SignatureType::XGitlabToken => {
             if expected_signature != secret_key {
                 return false;
             }
-        },
+        }
         SignatureType::XLineSignature => {
-            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
+            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())
+                .expect("HMAC can take any key size in test");
             mac.update(payload.as_bytes());
             let signature_bytes = mac.finalize().into_bytes();
-            let signature = format!("sha256={}", general_purpose::STANDARD.encode(signature_bytes));
+            let signature = format!(
+                "sha256={}",
+                general_purpose::STANDARD.encode(signature_bytes)
+            );
             if signature != expected_signature {
                 return false;
             }
-        },
+        }
     };
     true
 }
@@ -354,9 +398,30 @@ async fn relay_post(
         if let Ok(value_str) = value.to_str() {
             headers.insert(key.to_string(), value_str.to_string());
             match key.as_str() {
-                "x-hub-signature" => valid = validate_signature(SignatureType::XHubSignature, value_str, &data, &get_secret_key(&id)),
-                "x-gitlab-token" => valid = validate_signature(SignatureType::XGitlabToken, value_str, &data, &get_secret_key(&id)),
-                "x-line-signature" => valid = validate_signature(SignatureType::XLineSignature, value_str, &data, &get_secret_key(&id)),
+                "x-hub-signature" => {
+                    valid = validate_signature(
+                        SignatureType::XHubSignature,
+                        value_str,
+                        &data,
+                        &get_secret_key(&id),
+                    )
+                }
+                "x-gitlab-token" => {
+                    valid = validate_signature(
+                        SignatureType::XGitlabToken,
+                        value_str,
+                        &data,
+                        &get_secret_key(&id),
+                    )
+                }
+                "x-line-signature" => {
+                    valid = validate_signature(
+                        SignatureType::XLineSignature,
+                        value_str,
+                        &data,
+                        &get_secret_key(&id),
+                    )
+                }
                 _ => (),
             }
         } else {
@@ -407,7 +472,10 @@ async fn main() -> std::io::Result<()> {
     let public_path = std::env::var("APP_PUBLIC_PATH").unwrap_or_else(|_| "".to_string());
     let base_path = std::env::var("APP_BASE_PATH").unwrap_or_else(|_| "".to_string());
 
-    info!("Starting webhook relay service on http://{}{}", addr, public_path);
+    info!(
+        "Starting webhook relay service on http://{}{}",
+        addr, public_path
+    );
 
     // Initialize the global channels HashMap.
     // Arc enables shared ownership across threads, Mutex ensures exclusive access for modification.
@@ -440,7 +508,9 @@ async fn main() -> std::io::Result<()> {
                     channels_guard.remove(&id);
                     info!("Removed channel {}", id);
                 }
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         }
     });
 
@@ -457,22 +527,26 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(favicon)
             .service(admin)
-            .wrap(NormalizePath::new(actix_web::middleware::TrailingSlash::Trim))
+            .wrap(NormalizePath::new(
+                actix_web::middleware::TrailingSlash::Trim,
+            ))
             .service(
                 web::scope(&base_path)
                     .service(relay_get)
-                    .service(relay_post)
+                    .service(relay_post),
             )
             .default_service(web::to(not_found))
     })
-    .bind(addr)?.run().await
+    .bind(addr)?
+    .run()
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::RsaPrivateKey;
     use pkcs8::DecodePrivateKey;
+    use rsa::RsaPrivateKey;
 
     #[derive(Debug)]
     enum AppError {
@@ -540,7 +614,10 @@ mod tests {
         }
     }
 
-    fn decrypt_asymmetric(to_decrypt_base64: &str, private_key_path: &PathBuf) -> Result<Vec<u8>, AppError> {
+    fn decrypt_asymmetric(
+        to_decrypt_base64: &str,
+        private_key_path: &PathBuf,
+    ) -> Result<Vec<u8>, AppError> {
         let private_key_pem = fs::read_to_string(private_key_path)?;
         let private_key = RsaPrivateKey::from_pkcs8_pem(&private_key_pem)
             .map_err(|e| AppError::Pkcs8(e.into()))?;
@@ -552,10 +629,15 @@ mod tests {
         Ok(decrypted)
     }
 
-    fn decrypt_symmetric(encrypted_string: &str, private_key_path: &PathBuf) -> Result<String, AppError> {
+    fn decrypt_symmetric(
+        encrypted_string: &str,
+        private_key_path: &PathBuf,
+    ) -> Result<String, AppError> {
         let parts: Vec<&str> = encrypted_string.split(':').collect();
         if parts.len() != 3 {
-            return Err(AppError::Other("Invalid encrypted string format".to_string()));
+            return Err(AppError::Other(
+                "Invalid encrypted string format".to_string(),
+            ));
         }
 
         let encrypted_symmetric_key_base64 = parts[0];
@@ -563,7 +645,8 @@ mod tests {
         let ciphertext_base64 = parts[2];
 
         // 1. Decrypt the symmetric key using asymmetric decryption
-        let decrypted_symmetric_key_bytes = decrypt_asymmetric(encrypted_symmetric_key_base64, private_key_path)?;
+        let decrypted_symmetric_key_bytes =
+            decrypt_asymmetric(encrypted_symmetric_key_base64, private_key_path)?;
         let key = Key::<Aes256Gcm>::from_slice(&decrypted_symmetric_key_bytes);
         let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new(key);
 
@@ -581,7 +664,8 @@ mod tests {
     fn test_encrypted_decrypted() {
         let public_key_path = PathBuf::from("tests/public_key.pem");
         let private_key_path = PathBuf::from("tests/private_key.pem");
-        let original_plaintext = "This is a secret message used for testing encryption and decryption!";
+        let original_plaintext =
+            "This is a secret message used for testing encryption and decryption!";
         let encrypted_string = encrypt_symmetric(original_plaintext, &public_key_path).unwrap();
         let decrypted_plaintext = decrypt_symmetric(&encrypted_string, &private_key_path).unwrap();
         assert_eq!(original_plaintext, decrypted_plaintext);
@@ -591,7 +675,8 @@ mod tests {
         let secret_key = "secret";
         let payload = "payload";
 
-        let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
+        let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
+            .expect("HMAC can take any key size in test");
         mac.update(payload.as_bytes());
         let signature_bytes = mac.finalize().into_bytes();
         let calculated_signature = format!("sha1={}", hex::encode(signature_bytes));
@@ -600,30 +685,47 @@ mod tests {
 
         let signature_type = SignatureType::XHubSignature;
         let valid = validate_signature(signature_type, expected_signature, payload, secret_key);
-        assert!(valid, "X-Hub-Signature validation failed: calculated '{:?}', expected '{:?}'", calculated_signature, expected_signature);
+        assert!(
+            valid,
+            "X-Hub-Signature validation failed: calculated '{:?}', expected '{:?}'",
+            calculated_signature, expected_signature
+        );
     }
     #[test]
     fn test_x_gitlab_token() {
         let secret_key = "secret";
         let payload = "payload";
 
-        let valid = validate_signature(SignatureType::XGitlabToken, secret_key, payload, secret_key);
-        assert!(valid, "X-Gitlab-Token validation failed: calculated '{}', expected '{}'", secret_key, secret_key);
+        let valid =
+            validate_signature(SignatureType::XGitlabToken, secret_key, payload, secret_key);
+        assert!(
+            valid,
+            "X-Gitlab-Token validation failed: calculated '{}', expected '{}'",
+            secret_key, secret_key
+        );
     }
     #[test]
     fn test_x_line_signature() {
         let secret_key = "secret";
         let payload = "payload";
 
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).expect("HMAC can take any key size in test");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())
+            .expect("HMAC can take any key size in test");
         mac.update(payload.as_bytes());
         let signature_bytes = mac.finalize().into_bytes();
-        let calculated_signature = format!("sha256={}", general_purpose::STANDARD.encode(signature_bytes));
+        let calculated_signature = format!(
+            "sha256={}",
+            general_purpose::STANDARD.encode(signature_bytes)
+        );
 
         let expected_signature = &calculated_signature;
 
         let signature_type = SignatureType::XLineSignature;
         let valid = validate_signature(signature_type, expected_signature, payload, secret_key);
-        assert!(valid, "X-Line-Signature validation failed: calculated '{}', expected '{}'", calculated_signature, expected_signature);
+        assert!(
+            valid,
+            "X-Line-Signature validation failed: calculated '{}', expected '{}'",
+            calculated_signature, expected_signature
+        );
     }
 }
