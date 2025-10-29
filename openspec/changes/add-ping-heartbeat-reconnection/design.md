@@ -37,6 +37,39 @@ The webhook relay client currently handles SSE events but lacks resilience again
 3. Adjust timeout values if needed based on production behavior
 4. Update monitoring systems to alert on client exit codes
 
+## Testing Support
+
+### Server-Side Testing Environment Variables
+To enable comprehensive testing of heartbeat timeout and reconnection logic, the server supports optional testing configuration:
+
+- **`PING_STOP_AFTER_SECONDS`**: Stop sending ping events after specified seconds (for testing heartbeat timeout detection)
+- **`SERVER_SHUTDOWN_AFTER_SECONDS`**: Shut down server completely after specified seconds (prevents infinite test loops)
+
+### Test Configuration Example
+```bash
+# Start test server that stops pings at 10s and shuts down at 50s
+PING_STOP_AFTER_SECONDS=10 SERVER_SHUTDOWN_AFTER_SECONDS=50 cargo run --package webhook-relay
+
+# Run heartbeat integration test
+cargo test test_client_detects_heartbeat_timeout --test heartbeat_integration
+```
+
+### Test Validation
+The integration test (`test_client_detects_heartbeat_timeout`) verifies:
+1. Server stops sending pings after configured duration (10s)
+2. Client detects heartbeat timeout after threshold (30s default)
+3. Client attempts reconnection with exponential backoff
+4. Server shutdown prevents infinite reconnection loops
+5. Client exits with correct error code (1) after max attempts exceeded
+
+**Test Duration**: ~64 seconds (completes successfully without hanging)
+
+### Implementation Notes
+- Testing features are disabled by default (no production impact)
+- Server logs clearly indicate when test configuration is active
+- Both variables can be used independently or together
+- Shutdown uses graceful exit (exit code 0) as it's a test helper, not a failure
+
 ## Open Questions
 - Should heartbeat timeout be configurable via environment variable?
 - Should we add metrics/health endpoint for client status?

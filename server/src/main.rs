@@ -472,20 +472,70 @@ async fn main() -> std::io::Result<()> {
     let public_path = std::env::var("APP_PUBLIC_PATH").unwrap_or_else(|_| "".to_string());
     let base_path = std::env::var("APP_BASE_PATH").unwrap_or_else(|_| "".to_string());
 
-    info!(
-        "Starting webhook relay service on http://{}{}",
-        addr, public_path
-    );
+    // Ping interval configuration for heartbeat testing (in milliseconds)
+    let ping_interval_ms: u64 = std::env::var("PING_INTERVAL_MS")
+        .unwrap_or("7500".to_string())
+        .parse()
+        .unwrap_or(7500);
+
+    // Ping stop configuration for heartbeat testing (in seconds)
+    let ping_stop_after_seconds: Option<u64> = std::env::var("PING_STOP_AFTER_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    // Server shutdown configuration for testing (in seconds)
+    let server_shutdown_after_seconds: Option<u64> = std::env::var("SERVER_SHUTDOWN_AFTER_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    if let Some(stop_after) = ping_stop_after_seconds {
+        if let Some(shutdown_after) = server_shutdown_after_seconds {
+            info!(
+                "Starting webhook relay service on http://{}{} with ping interval {}ms (will stop pings after {}s, shutdown after {}s)",
+                addr, public_path, ping_interval_ms, stop_after, shutdown_after
+            );
+        } else {
+            info!(
+                "Starting webhook relay service on http://{}{} with ping interval {}ms (will stop pings after {}s)",
+                addr, public_path, ping_interval_ms, stop_after
+            );
+        }
+    } else if let Some(shutdown_after) = server_shutdown_after_seconds {
+        info!(
+            "Starting webhook relay service on http://{}{} with ping interval {}ms (will shutdown after {}s)",
+            addr, public_path, ping_interval_ms, shutdown_after
+        );
+    } else {
+        info!(
+            "Starting webhook relay service on http://{}{} with ping interval {}ms",
+            addr, public_path, ping_interval_ms
+        );
+    }
 
     // Initialize the global channels HashMap.
     // Arc enables shared ownership across threads, Mutex ensures exclusive access for modification.
     let channels: GlobalChannels = Arc::new(Mutex::new(HashMap::new()));
 
     let channels_for_tokio = channels.clone(); // Clone for the tokio::spawn block
+    let ping_interval = ping_interval_ms; // Capture for the spawned task
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(7500));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(ping_interval));
+        let start_time = std::time::Instant::now();
+
         loop {
             interval.tick().await;
+
+            // Check if we should stop sending pings after specified time
+            if let Some(stop_after_seconds) = ping_stop_after_seconds {
+                if start_time.elapsed().as_secs() >= stop_after_seconds {
+                    info!(
+                        "Stopping ping events after {} seconds as configured",
+                        stop_after_seconds
+                    );
+                    break;
+                }
+            }
+
             let channels_clone_inner = channels_for_tokio.clone(); // Clone for the inner tokio::spawn
             tokio::spawn(async move {
                 let mut channels_guard = channels_clone_inner.lock().unwrap(); // Get a mutable lock
@@ -513,6 +563,18 @@ async fn main() -> std::io::Result<()> {
             .unwrap();
         }
     });
+
+    // Spawn a task to shutdown server after specified time (for testing)
+    if let Some(shutdown_after_seconds) = server_shutdown_after_seconds {
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(shutdown_after_seconds)).await;
+            info!(
+                "Shutting down server after {} seconds as configured",
+                shutdown_after_seconds
+            );
+            std::process::exit(0);
+        });
+    }
 
     let app_state = web::Data::new(AppState {
         channels: channels.clone(),

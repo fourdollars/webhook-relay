@@ -12,6 +12,8 @@
 - [x] 2.3 Create integration test for temporary server unavailability
 - [x] 2.4 Create integration test for maximum reconnection attempts
 - [x] 2.5 Verify existing ping event handling still works
+- [x] 2.6 Add server-side testing environment variables (PING_STOP_AFTER_SECONDS, SERVER_SHUTDOWN_AFTER_SECONDS)
+- [x] 2.7 Ensure tests complete without hanging (server auto-shutdown)
 
 ## 3. Documentation
 - [x] 3.1 Update client command line help with heartbeat options

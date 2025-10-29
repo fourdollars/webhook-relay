@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 
 use env_logger;
 use futures::TryStreamExt;
-use std::{env, process, time::Duration};
 use log;
+use std::{env, process, time::Duration};
 
 use eventsource_client as es;
 
@@ -196,9 +196,18 @@ async fn main() -> Result<(), AppError> {
         eprintln!("    and attempts to reconnect with exponential backoff.");
         eprintln!();
         eprintln!("HEARTBEAT & RECONNECTION:");
-        eprintln!("    - Heartbeat timeout: {} seconds", DEFAULT_HEARTBEAT_TIMEOUT_SECS);
-        eprintln!("    - Max reconnection attempts: {}", MAX_RECONNECT_ATTEMPTS);
-        eprintln!("    - Backoff strategy: exponential ({}s, 2s, 4s, 8s, 16s, max {}s)", INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS);
+        eprintln!(
+            "    - Heartbeat timeout: {} seconds",
+            DEFAULT_HEARTBEAT_TIMEOUT_SECS
+        );
+        eprintln!(
+            "    - Max reconnection attempts: {}",
+            MAX_RECONNECT_ATTEMPTS
+        );
+        eprintln!(
+            "    - Backoff strategy: exponential ({}s, 2s, 4s, 8s, 16s, max {}s)",
+            INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS
+        );
         eprintln!();
         eprintln!("EXIT CODES:");
         eprintln!("    0 - Success (normal shutdown)");
@@ -248,7 +257,7 @@ async fn run_client_with_reconnection(
 
     loop {
         log::info!("Attempting to connect to {}", url);
-        
+
         let client = es::ClientBuilder::for_url(url)
             .map_err(|e| AppError::ConnectionFailed(format!("Failed to create client: {}", e)))?
             .reconnect(
@@ -264,7 +273,8 @@ async fn run_client_with_reconnection(
             state.is_connected = false;
         }
 
-        let result = run_client_session(client, private_key_path, &config, connection_state.clone()).await;
+        let result =
+            run_client_session(client, private_key_path, &config, connection_state.clone()).await;
 
         match result {
             Ok(_) => {
@@ -273,7 +283,34 @@ async fn run_client_with_reconnection(
             }
             Err(AppError::HeartbeatTimeout) | Err(AppError::ConnectionFailed(_)) => {
                 current_attempt += 1;
-                log::warn!("Connection failed (attempt {}/{}): {:?}", current_attempt, config.max_attempts, result);
+
+                // Log appropriately based on error type
+                match &result {
+                    Err(AppError::HeartbeatTimeout) => {
+                        log::info!(
+                            "Heartbeat timeout detected, attempting reconnection ({}/{})",
+                            current_attempt,
+                            config.max_attempts
+                        );
+                    }
+                    Err(AppError::ConnectionFailed(msg))
+                        if msg.contains("Eof") || msg.contains("Connection refused") =>
+                    {
+                        log::info!(
+                            "Connection lost, attempting reconnection ({}/{})",
+                            current_attempt,
+                            config.max_attempts
+                        );
+                    }
+                    _ => {
+                        log::warn!(
+                            "Connection failed (attempt {}/{}): {:?}",
+                            current_attempt,
+                            config.max_attempts,
+                            result
+                        );
+                    }
+                }
 
                 if current_attempt >= config.max_attempts {
                     return Err(AppError::ConnectionFailed(format!(
@@ -306,86 +343,90 @@ async fn run_client_session(
     // Start heartbeat monitoring task
     let heartbeat_state = connection_state.clone();
     let heartbeat_timeout = config.timeout;
-    let mut heartbeat_task: tokio::task::JoinHandle<Result<(), AppError>> = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5)); // Check every 5 seconds
-        
-        loop {
-            interval.tick().await;
-            
-            let state = heartbeat_state.lock().await;
-            if let Some(last_ping) = state.last_ping {
-                if state.is_connected && last_ping.elapsed() > heartbeat_timeout {
-                    log::error!(
-                        "Heartbeat timeout: no ping received for {:?} (threshold: {:?})",
-                        last_ping.elapsed(),
-                        heartbeat_timeout
-                    );
-                    return Err(AppError::HeartbeatTimeout);
+    let mut heartbeat_task: tokio::task::JoinHandle<Result<(), AppError>> =
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5)); // Check every 5 seconds
+
+            loop {
+                interval.tick().await;
+
+                let state = heartbeat_state.lock().await;
+                if let Some(last_ping) = state.last_ping {
+                    if state.is_connected && last_ping.elapsed() > heartbeat_timeout {
+                        log::error!(
+                            "Heartbeat timeout: no ping received for {:?} (threshold: {:?})",
+                            last_ping.elapsed(),
+                            heartbeat_timeout
+                        );
+                        return Err(AppError::HeartbeatTimeout);
+                    }
                 }
             }
-        }
-    });
+        });
 
     // Process the event stream
     let stream_result = async {
         let mut stream = client.stream();
-        
+
         loop {
             match stream.try_next().await {
                 Ok(Some(event)) => {
                     match event {
                         es::SSE::Connected(connection) => {
-                            log::info!("Connected to server, status={}", connection.response().status());
+                            log::info!(
+                                "Connected to server, status={}",
+                                connection.response().status()
+                            );
                             let mut state = connection_state.lock().await;
                             state.is_connected = true;
                             state.last_ping = Some(Instant::now()); // Initialize ping time on connection
                         }
-                        es::SSE::Event(ev) => {
-                            match ev.event_type.as_str() {
-                                "ping" => {
-                                    let mut state = connection_state.lock().await;
-                                    state.last_ping = Some(Instant::now());
-                                    log::debug!("Received ping event, updated heartbeat timestamp");
-                                }
-                                "webhook" => {
-                                    let data = match general_purpose::STANDARD.decode(&ev.data) {
-                                        Ok(data) => data,
-                                        Err(e) => {
-                                            eprintln!("Failed to decode webhook data: {}", e);
-                                            continue;
+                        es::SSE::Event(ev) => match ev.event_type.as_str() {
+                            "ping" => {
+                                let mut state = connection_state.lock().await;
+                                state.last_ping = Some(Instant::now());
+                                log::debug!("Received ping event, updated heartbeat timestamp");
+                            }
+                            "webhook" => {
+                                let data = match general_purpose::STANDARD.decode(&ev.data) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        eprintln!("Failed to decode webhook data: {}", e);
+                                        continue;
+                                    }
+                                };
+                                if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
+                                    match serde_json::to_string(&payload) {
+                                        Ok(payload) => {
+                                            println!("{}", payload);
                                         }
-                                    };
-                                    if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
+                                        Err(e) => eprintln!("Webhook event unknown data: {}", e),
+                                    }
+                                } else {
+                                    eprintln!("Webhook event unknown data: {:?}", data);
+                                }
+                            }
+                            "encrypted" => match decrypt_symmetric(&ev.data, &private_key_path) {
+                                Ok(decrypted) => {
+                                    if let Ok(payload) =
+                                        serde_json::from_slice::<Payload>(decrypted.as_bytes())
+                                    {
                                         match serde_json::to_string(&payload) {
                                             Ok(payload) => {
                                                 println!("{}", payload);
                                             }
-                                            Err(e) => eprintln!("Webhook event unknown data: {}", e),
-                                        }
-                                    } else {
-                                        eprintln!("Webhook event unknown data: {:?}", data);
-                                    }
-                                }
-                                "encrypted" => {
-                                    match decrypt_symmetric(&ev.data, &private_key_path) {
-                                        Ok(decrypted) => {
-                                            if let Ok(payload) = serde_json::from_slice::<Payload>(decrypted.as_bytes()) {
-                                                match serde_json::to_string(&payload) {
-                                                    Ok(payload) => {
-                                                        println!("{}", payload);
-                                                    }
-                                                    Err(e) => eprintln!("Encrypted event unknown data: {}", e),
-                                                }
-                                            } else {
-                                                eprintln!("Encrypted event unknown data: {:?}", decrypted);
+                                            Err(e) => {
+                                                eprintln!("Encrypted event unknown data: {}", e)
                                             }
                                         }
-                                        Err(e) => eprintln!("Failed to decrypt event: {}", e),
+                                    } else {
+                                        eprintln!("Encrypted event unknown data: {:?}", decrypted);
                                     }
                                 }
-                                _ => log::warn!("Received unknown event type: {}", ev.event_type),
-                            }
-                        }
+                                Err(e) => eprintln!("Failed to decrypt event: {}", e),
+                            },
+                            _ => log::warn!("Received unknown event type: {}", ev.event_type),
+                        },
                         es::SSE::Comment(comment) => {
                             log::debug!("Received comment: {}", comment);
                         }
@@ -397,12 +438,18 @@ async fn run_client_session(
                     break;
                 }
                 Err(e) => {
-                    log::error!("Stream error: {:?}", e);
+                    // Check if this is an expected disconnection (Eof or connection refused)
+                    let error_str = format!("{:?}", e);
+                    if error_str.contains("Eof") {
+                        log::info!("Server closed connection");
+                    } else {
+                        log::error!("Stream error: {:?}", e);
+                    }
                     return Err(AppError::ConnectionFailed(format!("Stream error: {:?}", e)));
                 }
             }
         }
-        
+
         Ok::<(), AppError>(())
     };
 
@@ -414,10 +461,14 @@ async fn run_client_session(
             result
         }
         heartbeat_result = &mut heartbeat_task => {
-            // Heartbeat timeout occurred
+            // Heartbeat timeout occurred - this is the expected path when server stops pinging
+            // We don't need to read the stream result as we're intentionally disconnecting
             match heartbeat_result {
                 Ok(Ok(_)) => Ok(()),
-                Ok(Err(err)) => Err(err),
+                Ok(Err(err)) => {
+                    log::info!("Disconnecting due to heartbeat timeout");
+                    Err(err)
+                },
                 Err(_) => Ok(()), // Task was aborted
             }
         }
@@ -444,7 +495,7 @@ mod tests {
             reconnect_attempts: 0,
             is_connected: false,
         };
-        
+
         assert!(state.last_ping.is_none());
         assert_eq!(state.reconnect_attempts, 0);
         assert!(!state.is_connected);
@@ -469,25 +520,25 @@ mod tests {
     fn test_exponential_backoff_calculation() {
         let config = HeartbeatConfig::default();
         let mut backoff = config.initial_backoff;
-        
+
         // Test exponential backoff progression
         assert_eq!(backoff, Duration::from_secs(1));
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(2));
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(4));
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(8));
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(16));
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(30)); // Capped at max_backoff
-        
+
         backoff = std::cmp::min(backoff * 2, config.max_backoff);
         assert_eq!(backoff, Duration::from_secs(30)); // Still capped
     }
