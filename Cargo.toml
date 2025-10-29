@@ -4,3 +4,12 @@ members = [
     "server",
     "client",
 ]
+
+[package]
+name = "webhook-relay-workspace"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+tokio = { version = "1.45.1", features = ["full"] }
+reqwest = "0.12"

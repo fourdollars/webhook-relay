@@ -662,8 +662,8 @@ mod tests {
     }
     #[test]
     fn test_encrypted_decrypted() {
-        let public_key_path = PathBuf::from("tests/public_key.pem");
-        let private_key_path = PathBuf::from("tests/private_key.pem");
+        let public_key_path = PathBuf::from("../tests/public_key.pem");
+        let private_key_path = PathBuf::from("../tests/private_key.pem");
         let original_plaintext =
             "This is a secret message used for testing encryption and decryption!";
         let encrypted_string = encrypt_symmetric(original_plaintext, &public_key_path).unwrap();
