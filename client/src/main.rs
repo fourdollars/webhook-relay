@@ -7,13 +7,47 @@ use pkcs8::DecodePrivateKey;
 use rsa::{RsaPrivateKey, pkcs1v15::Pkcs1v15Encrypt};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Arc, time::Instant};
+use tokio::sync::Mutex;
 
 use env_logger;
-use futures::{Stream, TryStreamExt};
+use futures::TryStreamExt;
 use std::{env, process, time::Duration};
+use log;
 
 use eventsource_client as es;
+
+// Heartbeat configuration constants
+const DEFAULT_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
+const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+const INITIAL_BACKOFF_SECS: u64 = 1;
+const MAX_BACKOFF_SECS: u64 = 30;
+
+#[derive(Debug, Clone)]
+struct HeartbeatConfig {
+    timeout: Duration,
+    max_attempts: u32,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(DEFAULT_HEARTBEAT_TIMEOUT_SECS),
+            max_attempts: MAX_RECONNECT_ATTEMPTS,
+            initial_backoff: Duration::from_secs(INITIAL_BACKOFF_SECS),
+            max_backoff: Duration::from_secs(MAX_BACKOFF_SECS),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConnectionState {
+    last_ping: Option<Instant>,
+    reconnect_attempts: u32,
+    is_connected: bool,
+}
 
 #[derive(Debug)]
 enum AppError {
@@ -22,6 +56,8 @@ enum AppError {
     Rsa(rsa::Error),
     Pkcs8(pkcs8::Error),
     Base64(base64::DecodeError),
+    ConnectionFailed(String),
+    HeartbeatTimeout,
     Other(String),
 }
 
@@ -33,6 +69,8 @@ impl std::fmt::Display for AppError {
             AppError::Rsa(err) => write!(f, "RSA error: {}", err),
             AppError::Pkcs8(err) => write!(f, "PKCS8 error: {}", err),
             AppError::Base64(err) => write!(f, "Base64 decode error: {}", err),
+            AppError::ConnectionFailed(err) => write!(f, "Connection failed: {}", err),
+            AppError::HeartbeatTimeout => write!(f, "Heartbeat timeout detected"),
             AppError::Other(err) => write!(f, "Other error: {}", err),
         }
     }
@@ -46,6 +84,8 @@ impl std::error::Error for AppError {
             AppError::Rsa(err) => Some(err),
             AppError::Pkcs8(err) => Some(err),
             AppError::Base64(err) => Some(err),
+            AppError::ConnectionFailed(_) => None,
+            AppError::HeartbeatTimeout => None,
             AppError::Other(_) => None,
         }
     }
@@ -135,83 +175,320 @@ fn decrypt_symmetric(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), es::Error> {
+async fn main() -> Result<(), AppError> {
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
-        eprintln!("Please pass args: <url> <private_key_path>");
-        process::exit(1);
+        eprintln!("Webhook Relay Client");
+        eprintln!();
+        eprintln!("USAGE:");
+        eprintln!("    {} <url> <private_key_path>", args[0]);
+        eprintln!();
+        eprintln!("ARGS:");
+        eprintln!("    <url>              Server-sent events URL to connect to");
+        eprintln!("    <private_key_path> Path to RSA private key file for decryption");
+        eprintln!();
+        eprintln!("BEHAVIOR:");
+        eprintln!("    The client connects to the SSE endpoint and monitors for webhook events.");
+        eprintln!("    It automatically detects server disconnections via heartbeat monitoring");
+        eprintln!("    and attempts to reconnect with exponential backoff.");
+        eprintln!();
+        eprintln!("HEARTBEAT & RECONNECTION:");
+        eprintln!("    - Heartbeat timeout: {} seconds", DEFAULT_HEARTBEAT_TIMEOUT_SECS);
+        eprintln!("    - Max reconnection attempts: {}", MAX_RECONNECT_ATTEMPTS);
+        eprintln!("    - Backoff strategy: exponential ({}s, 2s, 4s, 8s, 16s, max {}s)", INITIAL_BACKOFF_SECS, MAX_BACKOFF_SECS);
+        eprintln!();
+        eprintln!("EXIT CODES:");
+        eprintln!("    0 - Success (normal shutdown)");
+        eprintln!("    1 - Connection failure (server unreachable after max attempts)");
+        eprintln!("    2 - Configuration error (invalid arguments or key file)");
+        process::exit(2);
     }
 
     let url = &args[1];
     let private_key_path = PathBuf::from(&args[2]);
+    let config = HeartbeatConfig::default();
 
-    let client = es::ClientBuilder::for_url(url)?
-        .reconnect(
-            es::ReconnectOptions::reconnect(true)
-                .retry_initial(false)
-                .delay(Duration::from_secs(1))
-                .backoff_factor(2)
-                .delay_max(Duration::from_secs(60))
-                .build(),
-        )
-        .build();
+    let connection_state = Arc::new(Mutex::new(ConnectionState {
+        last_ping: None,
+        reconnect_attempts: 0,
+        is_connected: false,
+    }));
 
-    let mut stream = tail_events(client, &private_key_path);
-
-    while let Ok(Some(_)) = stream.try_next().await {}
-
-    Ok(())
+    match run_client_with_reconnection(url, &private_key_path, config, connection_state).await {
+        Ok(_) => {
+            log::info!("Client exited successfully");
+            Ok(())
+        }
+        Err(AppError::ConnectionFailed(msg)) => {
+            log::error!("Connection failed: {}", msg);
+            process::exit(1);
+        }
+        Err(AppError::HeartbeatTimeout) => {
+            log::error!("Heartbeat timeout - server appears to be unresponsive");
+            process::exit(1);
+        }
+        Err(err) => {
+            log::error!("Application error: {}", err);
+            process::exit(2);
+        }
+    }
 }
 
-fn tail_events(
+async fn run_client_with_reconnection(
+    url: &str,
+    private_key_path: &PathBuf,
+    config: HeartbeatConfig,
+    connection_state: Arc<Mutex<ConnectionState>>,
+) -> Result<(), AppError> {
+    let mut current_attempt = 0;
+    let mut backoff_duration = config.initial_backoff;
+
+    loop {
+        log::info!("Attempting to connect to {}", url);
+        
+        let client = es::ClientBuilder::for_url(url)
+            .map_err(|e| AppError::ConnectionFailed(format!("Failed to create client: {}", e)))?
+            .reconnect(
+                es::ReconnectOptions::reconnect(false) // We handle reconnection ourselves
+                    .build(),
+            )
+            .build();
+
+        // Reset connection state for new attempt
+        {
+            let mut state = connection_state.lock().await;
+            state.last_ping = None;
+            state.is_connected = false;
+        }
+
+        let result = run_client_session(client, private_key_path, &config, connection_state.clone()).await;
+
+        match result {
+            Ok(_) => {
+                log::info!("Client session ended successfully");
+                return Ok(());
+            }
+            Err(AppError::HeartbeatTimeout) | Err(AppError::ConnectionFailed(_)) => {
+                current_attempt += 1;
+                log::warn!("Connection failed (attempt {}/{}): {:?}", current_attempt, config.max_attempts, result);
+
+                if current_attempt >= config.max_attempts {
+                    return Err(AppError::ConnectionFailed(format!(
+                        "Max reconnection attempts ({}) exceeded",
+                        config.max_attempts
+                    )));
+                }
+
+                log::info!("Reconnecting in {:?}...", backoff_duration);
+                tokio::time::sleep(backoff_duration).await;
+
+                // Exponential backoff with max limit
+                backoff_duration = std::cmp::min(backoff_duration * 2, config.max_backoff);
+            }
+            Err(err) => {
+                return Err(err);
+            }
+        }
+    }
+}
+
+async fn run_client_session(
     client: impl es::Client,
     private_key_path: &PathBuf,
-) -> impl Stream<Item = Result<(), ()>> {
-    client
-        .stream()
-        .map_ok(move |event| match event {
-            es::SSE::Connected(connection) => {
-                eprintln!("connected status={}", connection.response().status())
-            }
-            es::SSE::Event(ev) => {
-                match ev.event_type.as_str() {
-                    "ping" => {} // Ignore
-                    "webhook" => {
-                        let data = general_purpose::STANDARD.decode(&ev.data).unwrap();
-                        if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
-                            match serde_json::to_string(&payload) {
-                                Ok(payload) => {
-                                    println!("{}", payload);
-                                }
-                                Err(e) => eprintln!("Webhook event unknown data: {}", e),
-                            }
-                        } else {
-                            eprintln!("Webhook event unknown data: {:?}", data);
-                        }
-                    }
-                    "encrypted" => {
-                        let decrypted = decrypt_symmetric(&ev.data, &private_key_path).unwrap();
-                        if let Ok(payload) = serde_json::from_slice::<Payload>(decrypted.as_bytes())
-                        {
-                            match serde_json::to_string(&payload) {
-                                Ok(payload) => {
-                                    println!("{}", payload);
-                                }
-                                Err(e) => eprintln!("Encrypted event unknown data: {}", e),
-                            }
-                        } else {
-                            eprintln!("Encrypted event unknown data: {:?}", decrypted);
-                        }
-                    }
-                    _ => eprintln!("got an unknown event: \n{:?}", ev),
+    config: &HeartbeatConfig,
+    connection_state: Arc<Mutex<ConnectionState>>,
+) -> Result<(), AppError> {
+    let private_key_path = private_key_path.clone();
+
+    // Start heartbeat monitoring task
+    let heartbeat_state = connection_state.clone();
+    let heartbeat_timeout = config.timeout;
+    let mut heartbeat_task: tokio::task::JoinHandle<Result<(), AppError>> = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5)); // Check every 5 seconds
+        
+        loop {
+            interval.tick().await;
+            
+            let state = heartbeat_state.lock().await;
+            if let Some(last_ping) = state.last_ping {
+                if state.is_connected && last_ping.elapsed() > heartbeat_timeout {
+                    log::error!(
+                        "Heartbeat timeout: no ping received for {:?} (threshold: {:?})",
+                        last_ping.elapsed(),
+                        heartbeat_timeout
+                    );
+                    return Err(AppError::HeartbeatTimeout);
                 }
             }
-            es::SSE::Comment(comment) => {
-                eprintln!("got a comment: \n{}", comment)
+        }
+    });
+
+    // Process the event stream
+    let stream_result = async {
+        let mut stream = client.stream();
+        
+        loop {
+            match stream.try_next().await {
+                Ok(Some(event)) => {
+                    match event {
+                        es::SSE::Connected(connection) => {
+                            log::info!("Connected to server, status={}", connection.response().status());
+                            let mut state = connection_state.lock().await;
+                            state.is_connected = true;
+                            state.last_ping = Some(Instant::now()); // Initialize ping time on connection
+                        }
+                        es::SSE::Event(ev) => {
+                            match ev.event_type.as_str() {
+                                "ping" => {
+                                    let mut state = connection_state.lock().await;
+                                    state.last_ping = Some(Instant::now());
+                                    log::debug!("Received ping event, updated heartbeat timestamp");
+                                }
+                                "webhook" => {
+                                    let data = match general_purpose::STANDARD.decode(&ev.data) {
+                                        Ok(data) => data,
+                                        Err(e) => {
+                                            eprintln!("Failed to decode webhook data: {}", e);
+                                            continue;
+                                        }
+                                    };
+                                    if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
+                                        match serde_json::to_string(&payload) {
+                                            Ok(payload) => {
+                                                println!("{}", payload);
+                                            }
+                                            Err(e) => eprintln!("Webhook event unknown data: {}", e),
+                                        }
+                                    } else {
+                                        eprintln!("Webhook event unknown data: {:?}", data);
+                                    }
+                                }
+                                "encrypted" => {
+                                    match decrypt_symmetric(&ev.data, &private_key_path) {
+                                        Ok(decrypted) => {
+                                            if let Ok(payload) = serde_json::from_slice::<Payload>(decrypted.as_bytes()) {
+                                                match serde_json::to_string(&payload) {
+                                                    Ok(payload) => {
+                                                        println!("{}", payload);
+                                                    }
+                                                    Err(e) => eprintln!("Encrypted event unknown data: {}", e),
+                                                }
+                                            } else {
+                                                eprintln!("Encrypted event unknown data: {:?}", decrypted);
+                                            }
+                                        }
+                                        Err(e) => eprintln!("Failed to decrypt event: {}", e),
+                                    }
+                                }
+                                _ => log::warn!("Received unknown event type: {}", ev.event_type),
+                            }
+                        }
+                        es::SSE::Comment(comment) => {
+                            log::debug!("Received comment: {}", comment);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Stream ended
+                    log::info!("Event stream ended");
+                    break;
+                }
+                Err(e) => {
+                    log::error!("Stream error: {:?}", e);
+                    return Err(AppError::ConnectionFailed(format!("Stream error: {:?}", e)));
+                }
             }
-        })
-        .map_err(|err| eprintln!("error streaming events: {:?}", err))
+        }
+        
+        Ok::<(), AppError>(())
+    };
+
+    // Wait for either stream to end or heartbeat timeout
+    tokio::select! {
+        result = stream_result => {
+            // Stream ended, abort heartbeat monitoring
+            heartbeat_task.abort();
+            result
+        }
+        heartbeat_result = &mut heartbeat_task => {
+            // Heartbeat timeout occurred
+            match heartbeat_result {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(err)) => Err(err),
+                Err(_) => Ok(()), // Task was aborted
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heartbeat_config_defaults() {
+        let config = HeartbeatConfig::default();
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.max_attempts, 5);
+        assert_eq!(config.initial_backoff, Duration::from_secs(1));
+        assert_eq!(config.max_backoff, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_connection_state_initialization() {
+        let state = ConnectionState {
+            last_ping: None,
+            reconnect_attempts: 0,
+            is_connected: false,
+        };
+        
+        assert!(state.last_ping.is_none());
+        assert_eq!(state.reconnect_attempts, 0);
+        assert!(!state.is_connected);
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_timeout_calculation() {
+        let config = HeartbeatConfig::default();
+        let connection_state = Arc::new(Mutex::new(ConnectionState {
+            last_ping: Some(Instant::now() - Duration::from_secs(35)), // 35 seconds ago
+            reconnect_attempts: 0,
+            is_connected: true,
+        }));
+
+        let state = connection_state.lock().await;
+        if let Some(last_ping) = state.last_ping {
+            assert!(last_ping.elapsed() > config.timeout);
+        }
+    }
+
+    #[test]
+    fn test_exponential_backoff_calculation() {
+        let config = HeartbeatConfig::default();
+        let mut backoff = config.initial_backoff;
+        
+        // Test exponential backoff progression
+        assert_eq!(backoff, Duration::from_secs(1));
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(2));
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(4));
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(8));
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(16));
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(30)); // Capped at max_backoff
+        
+        backoff = std::cmp::min(backoff * 2, config.max_backoff);
+        assert_eq!(backoff, Duration::from_secs(30)); // Still capped
+    }
 }

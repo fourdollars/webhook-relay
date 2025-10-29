@@ -1847,6 +1847,7 @@ dependencies = [
  "env_logger",
  "eventsource-client",
  "futures",
+ "log",
  "pkcs8",
  "rand_core 0.6.4",
  "rsa",
