@@ -45,7 +45,6 @@ impl Default for HeartbeatConfig {
 #[derive(Debug)]
 struct ConnectionState {
     last_ping: Option<Instant>,
-    reconnect_attempts: u32,
     is_connected: bool,
 }
 
@@ -222,7 +221,6 @@ async fn main() -> Result<(), AppError> {
 
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         last_ping: None,
-        reconnect_attempts: 0,
         is_connected: false,
     }));
 
@@ -492,12 +490,10 @@ mod tests {
     fn test_connection_state_initialization() {
         let state = ConnectionState {
             last_ping: None,
-            reconnect_attempts: 0,
             is_connected: false,
         };
 
         assert!(state.last_ping.is_none());
-        assert_eq!(state.reconnect_attempts, 0);
         assert!(!state.is_connected);
     }
 
@@ -506,7 +502,6 @@ mod tests {
         let config = HeartbeatConfig::default();
         let connection_state = Arc::new(Mutex::new(ConnectionState {
             last_ping: Some(Instant::now() - Duration::from_secs(35)), // 35 seconds ago
-            reconnect_attempts: 0,
             is_connected: true,
         }));
 

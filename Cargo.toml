@@ -13,3 +13,11 @@ edition = "2024"
 [dev-dependencies]
 tokio = { version = "1.45.1", features = ["full"] }
 reqwest = "0.12"
+
+[profile.release]
+# Enable optimizations for size and speed
+opt-level = "z"          # Optimize for size
+lto = true               # Enable Link Time Optimization
+codegen-units = 1        # Better optimization with single codegen unit
+panic = "abort"          # Remove panic formatting code
+strip = "symbols"        # Strip symbols automatically
