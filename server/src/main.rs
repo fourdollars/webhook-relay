@@ -379,13 +379,12 @@ async fn relay_post(
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Ok(HttpResponse::BadRequest().body("Invalid channel ID"));
     }
-    let sender = get_broadcast_sender(id.clone(), data.channels.clone())?;
-    let mut data = String::new();
+    let mut body_data = String::new();
 
     // Iterate over the payload chunks to read the incoming data.
     while let Some(chunk_result) = payload.next().await {
         let chunk = chunk_result?; // `chunk` is now of type `web::Bytes`
-        data.push_str(&String::from_utf8_lossy(&chunk));
+        body_data.push_str(&String::from_utf8_lossy(&chunk));
     }
 
     // Extract headers into a HashMap<String, String>
@@ -399,7 +398,7 @@ async fn relay_post(
                     valid = validate_signature(
                         SignatureType::XHubSignature,
                         value_str,
-                        &data,
+                        &body_data,
                         &get_secret_key(&id),
                     )
                 }
@@ -407,7 +406,7 @@ async fn relay_post(
                     valid = validate_signature(
                         SignatureType::XGitlabToken,
                         value_str,
-                        &data,
+                        &body_data,
                         &get_secret_key(&id),
                     )
                 }
@@ -415,7 +414,7 @@ async fn relay_post(
                     valid = validate_signature(
                         SignatureType::XLineSignature,
                         value_str,
-                        &data,
+                        &body_data,
                         &get_secret_key(&id),
                     )
                 }
@@ -428,7 +427,7 @@ async fn relay_post(
 
     // Create the Payload instance
     let payload = Payload {
-        body: data,
+        body: body_data,
         headers: serde_json::to_string(&headers).unwrap(),
     };
 
@@ -438,14 +437,26 @@ async fn relay_post(
         return Err(actix_web::error::ErrorUnauthorized("Invalid signature"));
     }
 
-    // Send the payload to all subscribers of the broadcast channel.
-    // `sender.send()` returns an `Err` if all receivers have been dropped or the channel is closed.
-    if let Err(e) = sender.send(payload) {
-        error!("Failed to send payload to broadcast channel: {}", e);
-        // In a more robust application, you might want to remove the channel from the HashMap here
-        return Err(actix_web::error::ErrorInternalServerError(
-            "Failed to broadcast payload",
-        ));
+    // Try to get the broadcast sender, but don't fail if channel doesn't exist
+    // This allows webhook validation requests to succeed even without active subscribers
+    match get_broadcast_sender(id.clone(), data.channels.clone()) {
+        Ok(sender) => {
+            // Send the payload to all subscribers of the broadcast channel.
+            if let Err(e) = sender.send(payload) {
+                error!("Failed to send payload to broadcast channel: {}", e);
+                return Err(actix_web::error::ErrorInternalServerError(
+                    "Failed to broadcast payload",
+                ));
+            }
+        }
+        Err(_) => {
+            // Channel doesn't exist (no subscribers), but signature is valid
+            // Accept the request for webhook validation purposes
+            info!(
+                "Accepted webhook for channel '{}' (no active subscribers)",
+                id
+            );
+        }
     }
     Ok(HttpResponse::Ok().finish())
 }
