@@ -359,10 +359,7 @@ fn validate_signature(
                 .expect("HMAC can take any key size in test");
             mac.update(payload.as_bytes());
             let signature_bytes = mac.finalize().into_bytes();
-            let signature = format!(
-                "sha256={}",
-                general_purpose::STANDARD.encode(signature_bytes)
-            );
+            let signature = general_purpose::STANDARD.encode(signature_bytes);
             if signature != expected_signature {
                 return false;
             }
@@ -775,10 +772,7 @@ mod tests {
             .expect("HMAC can take any key size in test");
         mac.update(payload.as_bytes());
         let signature_bytes = mac.finalize().into_bytes();
-        let calculated_signature = format!(
-            "sha256={}",
-            general_purpose::STANDARD.encode(signature_bytes)
-        );
+        let calculated_signature = general_purpose::STANDARD.encode(signature_bytes);
 
         let expected_signature = &calculated_signature;
 
