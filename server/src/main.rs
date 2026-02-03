@@ -2,7 +2,7 @@ use actix_web::{
     App, Error, HttpRequest, HttpResponse, HttpServer, Responder, body::BodyStream, get,
     middleware::NormalizePath, post, web,
 };
-use aes_gcm::{Aes256Gcm, Key, Nonce, aead::Aead};
+use aes_gcm::{Aes256Gcm, aead::Aead};
 use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
 use futures_util::stream::StreamExt;
@@ -51,16 +51,17 @@ fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<St
     }
 }
 
+#[allow(deprecated)]
 fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Error> {
     let mut key_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut key_bytes);
 
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new(key);
 
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = match cipher.encrypt(nonce, text.as_bytes()) {
         Ok(ciphertext) => ciphertext,

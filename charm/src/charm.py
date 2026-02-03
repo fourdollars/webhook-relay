@@ -10,16 +10,14 @@ This charm deploys the webhook-relay service in two operational modes:
 """
 
 import logging
-import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from ops.charm import CharmBase
 from ops.framework import StoredState
 from ops.main import main
-from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
+from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
 
 logger = logging.getLogger(__name__)
 

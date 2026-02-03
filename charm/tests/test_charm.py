@@ -5,8 +5,7 @@
 """Unit tests for webhook-relay charm."""
 
 import unittest
-from unittest.mock import MagicMock, Mock, patch, call
-from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from ops.testing import Harness
 from charm import WebhookRelayCharm
