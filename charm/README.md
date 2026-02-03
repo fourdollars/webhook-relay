@@ -50,9 +50,9 @@ juju config relay-client key="$(cat private_key.pem)"
 
 ### Common options
 
-- `mode`: Operation mode - `webhook` (server) or `relayd` (client)
+- `mode`: Operation mode - `server` (relay server) or `client` (relay client)
 
-### Webhook mode options
+### Server mode options
 
 - `host`: Host address to bind (default: "0.0.0.0")
 - `port`: Port to bind (default: 3000)
