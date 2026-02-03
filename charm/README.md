@@ -43,7 +43,6 @@ echo "Webhook URL: http://your-server:3000/$CHANNEL_ID"
 juju deploy webhook-relay relay-client
 juju config relay-client mode=client
 juju config relay-client url="http://webhook-server:3000/channel-id"
-juju config relay-client secret="shared-secret"
 juju config relay-client key="$(cat private_key.pem)"
 ```
 
@@ -70,7 +69,6 @@ juju config relay-client key="$(cat private_key.pem)"
 
 - `url`: SSE endpoint URL to connect to (required)
 - `forward`: HTTP POST URL to forward webhook payloads (optional). If specified, decrypted webhook payloads will be POSTed to this URL instead of stdout. Ping events are never forwarded.
-- `secret`: Shared secret for signature validation
 - `key`: RSA private key for decryption (PEM format)
 
 ## Channel Configuration

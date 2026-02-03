@@ -230,11 +230,6 @@ config:
         If specified, decrypted webhook payloads will be POSTed to this URL
         instead of being printed to stdout. Ping events are never forwarded.
     
-    secret:
-      type: string
-      default: ""
-      description: Shared secret for signature validation (client mode only)
-    
     key:
       type: string
       default: ""
