@@ -25,6 +25,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -33,21 +38,20 @@ jobs:
       - name: Install dependencies
         working-directory: charm
         run: |
-          python -m pip install --upgrade pip
-          pip install flake8 black isort
-          pip install -r requirements.txt
+          uv pip install --system flake8 black isort
+          uv pip install --system -r requirements.txt
       
       - name: Run flake8
         working-directory: charm
-        run: flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
+        run: uv run flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
       
       - name: Check code formatting with black
         working-directory: charm
-        run: black --check src/ tests/
+        run: uv run black --check src/ tests/
       
       - name: Check import sorting with isort
         working-directory: charm
-        run: isort --check-only src/ tests/
+        run: uv run isort --check-only src/ tests/
 
   unit-test:
     name: Unit Tests
@@ -56,6 +60,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -64,17 +73,16 @@ jobs:
       - name: Install dependencies
         working-directory: charm
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install coverage pytest
+          uv pip install --system -r requirements.txt
+          uv pip install --system coverage pytest
       
       - name: Run unit tests with coverage
         working-directory: charm
         run: |
           export PYTHONPATH="${PYTHONPATH}:${PWD}/src"
-          coverage run -m pytest tests/
-          coverage report -m
-          coverage xml
+          uv run coverage run -m pytest tests/
+          uv run coverage report -m
+          uv run coverage xml
       
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
