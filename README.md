@@ -1,5 +1,9 @@
 # webhook-relay
 
+[![Tests](https://github.com/fourdollars/webhook-relay/actions/workflows/test.yaml/badge.svg)](https://github.com/fourdollars/webhook-relay/actions/workflows/test.yaml)
+[![CharmHub](https://charmhub.io/webhook-relay/badge.svg)](https://charmhub.io/webhook-relay)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A SSE webhook relay server made by Rust with additional secure supports for signature checking and encrypted payload.
 
 ```mermaid
