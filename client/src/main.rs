@@ -146,22 +146,35 @@ async fn handle_payload(
     forward_post_url: &Option<String>,
     http_client: &reqwest::Client,
 ) -> Result<(), AppError> {
-    let payload_json = serde_json::to_string(payload)
-        .map_err(|e| AppError::Other(format!("Failed to serialize payload: {}", e)))?;
-
     if let Some(url) = forward_post_url {
-        match http_client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .body(payload_json.clone())
-            .send()
-            .await
-        {
+        // Parse headers from JSON string
+        let headers_map: std::collections::HashMap<String, String> =
+            serde_json::from_str(&payload.headers)
+                .map_err(|e| AppError::Other(format!("Failed to parse headers JSON: {}", e)))?;
+
+        // Build HTTP request with forwarded headers
+        let mut request = http_client.post(url);
+
+        for (key, value) in headers_map.iter() {
+            // Forward all headers from the original webhook
+            request = request.header(key, value);
+        }
+
+        // Send the body as-is (not wrapped in JSON)
+        match request.body(payload.body.clone()).send().await {
             Ok(response) => {
                 if response.status().is_success() {
-                    log::info!("Successfully forwarded payload to {}, status: {}", url, response.status());
+                    log::info!(
+                        "Successfully forwarded payload to {}, status: {}",
+                        url,
+                        response.status()
+                    );
                 } else {
-                    log::warn!("Forward to {} returned non-success status: {}", url, response.status());
+                    log::warn!(
+                        "Forward to {} returned non-success status: {}",
+                        url,
+                        response.status()
+                    );
                 }
             }
             Err(e) => {
@@ -170,6 +183,9 @@ async fn handle_payload(
             }
         }
     } else {
+        // Print payload as JSON when no forward URL is specified
+        let payload_json = serde_json::to_string(payload)
+            .map_err(|e| AppError::Other(format!("Failed to serialize payload: {}", e)))?;
         println!("{}", payload_json);
     }
 
@@ -219,7 +235,10 @@ async fn main() -> Result<(), AppError> {
         eprintln!("Webhook Relay Client");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("    {} <url> <private_key_path> [forward_post_url]", args[0]);
+        eprintln!(
+            "    {} <url> <private_key_path> [forward_post_url]",
+            args[0]
+        );
         eprintln!();
         eprintln!("ARGS:");
         eprintln!("    <url>              Server-sent events URL to connect to");
@@ -231,8 +250,12 @@ async fn main() -> Result<(), AppError> {
         eprintln!("    It automatically detects server disconnections via heartbeat monitoring");
         eprintln!("    and attempts to reconnect with exponential backoff.");
         eprintln!();
-        eprintln!("    If forward_post_url is provided, webhook payloads will be POSTed to that URL");
-        eprintln!("    instead of being printed to stdout. Ping/heartbeat events are always ignored.");
+        eprintln!(
+            "    If forward_post_url is provided, webhook payloads will be POSTed to that URL"
+        );
+        eprintln!(
+            "    instead of being printed to stdout. Ping/heartbeat events are always ignored."
+        );
         eprintln!();
         eprintln!("HEARTBEAT & RECONNECTION:");
         eprintln!(
@@ -269,7 +292,15 @@ async fn main() -> Result<(), AppError> {
         is_connected: false,
     }));
 
-    match run_client_with_reconnection(url, &private_key_path, forward_post_url, config, connection_state).await {
+    match run_client_with_reconnection(
+        url,
+        &private_key_path,
+        forward_post_url,
+        config,
+        connection_state,
+    )
+    .await
+    {
         Ok(_) => {
             log::info!("Client exited successfully");
             Ok(())
@@ -317,8 +348,14 @@ async fn run_client_with_reconnection(
             state.is_connected = false;
         }
 
-        let result =
-            run_client_session(client, private_key_path, forward_post_url.clone(), &config, connection_state.clone()).await;
+        let result = run_client_session(
+            client,
+            private_key_path,
+            forward_post_url.clone(),
+            &config,
+            connection_state.clone(),
+        )
+        .await;
 
         match result {
             Ok(_) => {
@@ -442,7 +479,10 @@ async fn run_client_session(
                                     }
                                 };
                                 if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
-                                    if let Err(e) = handle_payload(&payload, &forward_post_url, &http_client).await {
+                                    if let Err(e) =
+                                        handle_payload(&payload, &forward_post_url, &http_client)
+                                            .await
+                                    {
                                         eprintln!("Failed to handle webhook payload: {}", e);
                                     }
                                 } else {
@@ -454,7 +494,13 @@ async fn run_client_session(
                                     if let Ok(payload) =
                                         serde_json::from_slice::<Payload>(decrypted.as_bytes())
                                     {
-                                        if let Err(e) = handle_payload(&payload, &forward_post_url, &http_client).await {
+                                        if let Err(e) = handle_payload(
+                                            &payload,
+                                            &forward_post_url,
+                                            &http_client,
+                                        )
+                                        .await
+                                        {
                                             eprintln!("Failed to handle encrypted payload: {}", e);
                                         }
                                     } else {
