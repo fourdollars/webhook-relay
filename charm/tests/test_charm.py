@@ -43,16 +43,26 @@ class TestWebhookRelayCharm(unittest.TestCase):
         # Mock binary paths to not exist
         mock_bin = MagicMock()
         mock_bin.exists.return_value = False
-        mock_path.return_value = mock_bin
+
+        # Mock Path to return the mock_bin for any path construction
+        mock_path_instance = MagicMock()
+        mock_path_instance.__truediv__ = MagicMock(return_value=mock_bin)
+        mock_path.return_value = mock_path_instance
 
         self.harness.charm.on.install.emit()
 
-        self.assertFalse(self.harness.charm._stored.installed)
+        # _stored.installed should not be set when binaries are missing
+        self.assertFalse(getattr(self.harness.charm._stored, "installed", False))
 
+    @patch("charm.Path")
     @patch("charm.subprocess.run")
-    def test_config_changed_webhook_mode(self, mock_run):
+    def test_config_changed_webhook_mode(self, mock_run, mock_path_class):
         """Test configuration change to server mode."""
         self.harness.charm._stored.installed = True
+
+        # Mock Path for secret file operations
+        mock_secret_file = MagicMock()
+        mock_path_class.return_value = mock_secret_file
 
         # Set configuration for server mode
         self.harness.update_config(
@@ -78,7 +88,6 @@ class TestWebhookRelayCharm(unittest.TestCase):
             {
                 "mode": "client",
                 "url": "http://example.com/channel",
-                "secret": "shared-secret",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
             }
         )
@@ -92,7 +101,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.harness.charm._stored.installed = True
 
         # Set configuration for client mode without URL
-        self.harness.update_config({"mode": "client", "secret": "shared-secret"})
+        self.harness.update_config({"mode": "client"})
 
         # Should be in BlockedStatus due to missing URL
         self.assertIsInstance(self.harness.charm.unit.status, tuple)
