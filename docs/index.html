@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Webhook Relay - Secure SSE-based webhook relay server with signature validation and encryption support">
+    <meta name="keywords" content="Webhook, SSE, Server-Sent Events, Relay, Rust, Juju, Charm, Encryption, HMAC">
+    <meta name="author" content="Shih-Yuan Lee (FourDollars)">
+    <title>Webhook Relay - Secure SSE Webhook Broadcasting</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        /* ========================================
+           CSS VARIABLES - Color Palette & Theme
+           ======================================== */
+        :root {
+            --primary: #3b82f6;
+            --primary-dark: #2563eb;
+            --secondary: #8b5cf6;
+            --accent: #06b6d4;
+            --dark: #0f172a;
+            --dark-light: #1e293b;
+            --gray: #64748b;
+            --gray-light: #cbd5e1;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+        
+        /* ========================================
+           RESET & BASE STYLES
+           ======================================== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            line-height: 1.6;
+            color: #e2e8f0;
+            background: var(--dark);
+            overflow-x: hidden;
+        }
+        
+        /* ========================================
+           ANIMATED GRADIENT BACKGROUND
+           ======================================== */
+        .bg-gradient {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+        }
+        
+        .bg-gradient::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(59, 130, 246, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(139, 92, 246, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 40% 20%, rgba(6, 182, 212, 0.1) 0%, transparent 50%);
+            animation: float 20s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            33% { transform: translate(30px, -30px) rotate(120deg); }
+            66% { transform: translate(-20px, 20px) rotate(240deg); }
+        }
+        
+        /* ========================================
+           LAYOUT CONTAINER
+           ======================================== */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+        
+        /* ========================================
+           HEADER & NAVIGATION
+           ======================================== */
+        header {
+            padding: 2rem 0;
+            position: relative;
+        }
+        
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.75rem;
+            font-weight: 900;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            list-style: none;
+        }
+        
+        .nav-links a {
+            color: var(--gray-light);
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover {
+            color: white;
+        }
+        
+        /* ========================================
+           HERO SECTION
+           ======================================== */
+        .hero {
+            padding: 6rem 0 8rem;
+            text-align: center;
+        }
+        
+        .hero h1 {
+            font-size: 4rem;
+            font-weight: 900;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            background: linear-gradient(135deg, #fff 0%, var(--gray-light) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero .gradient-text {
+            background: linear-gradient(135deg, var(--primary), var(--secondary), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--gray);
+            margin-bottom: 3rem;
+            max-width: 700px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: 600;
+            border-radius: 0.75rem;
+            text-decoration: none;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            border: none;
+            box-shadow: 0 10px 30px rgba(59, 130, 246, 0.3);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 40px rgba(59, 130, 246, 0.4);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        /* ========================================
+           CODE BLOCKS
+           ======================================== */
+        .code-block {
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin: 3rem auto;
+            max-width: 800px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .code-block::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
+        }
+        
+        .code-block pre {
+            font-family: 'JetBrains Mono', monospace;
+            color: #e2e8f0;
+            overflow-x: auto;
+            font-size: 0.9rem;
+        }
+        
+        .code-block .comment {
+            color: var(--gray);
+        }
+        
+        .code-block .command {
+            color: var(--accent);
+        }
+        
+        .code-block .string {
+            color: var(--success);
+        }
+        
+        /* ========================================
+           FEATURES SECTION
+           ======================================== */
+        .features {
+            padding: 6rem 0;
+        }
+        
+        .section-title {
+            text-align: center;
+            font-size: 2.5rem;
+            font-weight: 900;
+            margin-bottom: 1rem;
+        }
+        
+        .section-subtitle {
+            text-align: center;
+            color: var(--gray);
+            font-size: 1.125rem;
+            margin-bottom: 4rem;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        
+        .feature-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 2rem;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: 0 20px 40px rgba(59, 130, 246, 0.2);
+        }
+        
+        .feature-icon {
+            width: 3rem;
+            height: 3rem;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .feature-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+        
+        .feature-card p {
+            color: var(--gray);
+        }
+        
+        /* ========================================
+           DEPLOYMENT MODES SECTION
+           ======================================== */
+        .deployment-modes {
+            padding: 6rem 0;
+            background: rgba(255, 255, 255, 0.02);
+        }
+        
+        .modes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .mode-card {
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 2.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .mode-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--accent));
+        }
+        
+        .mode-badge {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid var(--primary);
+            border-radius: 2rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+        
+        .mode-card h3 {
+            font-size: 1.75rem;
+            margin-bottom: 1rem;
+        }
+        
+        .mode-card p {
+            color: var(--gray);
+            margin-bottom: 1.5rem;
+        }
+        
+        .mode-features {
+            list-style: none;
+            margin-bottom: 1.5rem;
+        }
+        
+        .mode-features li {
+            padding: 0.5rem 0;
+            padding-left: 1.5rem;
+            position: relative;
+            color: var(--gray-light);
+        }
+        
+        .mode-features li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--success);
+            font-weight: bold;
+        }
+        
+        /* ========================================
+           ARCHITECTURE DIAGRAM SECTION
+           ======================================== */
+        .architecture {
+            padding: 6rem 0;
+        }
+        
+        .diagram-container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: var(--dark-light);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .diagram-container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent));
+        }
+        
+        .diagram-container svg {
+            width: 100%;
+            height: auto;
+        }
+        
+        /* ========================================
+           FOOTER
+           ======================================== */
+        footer {
+            padding: 3rem 0;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        footer p {
+            color: var(--gray);
+        }
+        
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        
+        footer a:hover {
+            text-decoration: underline;
+        }
+        
+        .badges {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 1rem;
+        }
+        
+        /* ========================================
+           RESPONSIVE DESIGN
+           ======================================== */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+            
+            .nav-links {
+                gap: 1rem;
+            }
+            
+            .modes-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-gradient"></div>
+    
+    <header>
+        <div class="container">
+            <nav>
+                <div class="logo">🔗 Webhook Relay</div>
+                <ul class="nav-links">
+                    <li><a href="https://github.com/fourdollars/webhook-relay">GitHub</a></li>
+                    <li><a href="https://charmhub.io/webhook-relay">CharmHub</a></li>
+                    <li><a href="https://github.com/fourdollars/webhook-relay#readme">Docs</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+    
+    <main>
+        <!-- HERO SECTION -->
+        <section class="hero">
+            <div class="container">
+                <h1>
+                    Secure <span class="gradient-text">Webhook Relay</span><br>
+                    Built with Rust
+                </h1>
+                <p>
+                    SSE-based webhook relay server with signature validation, encryption support, 
+                    and HTTP forwarding capabilities. Perfect for receiving webhooks on clients behind NAT/firewall.
+                </p>
+                <div class="cta-buttons">
+                    <a href="https://github.com/fourdollars/webhook-relay" class="btn btn-primary">
+                        View on GitHub →
+                    </a>
+                    <a href="https://charmhub.io/webhook-relay" class="btn btn-secondary">
+                        Deploy with Juju
+                    </a>
+                </div>
+            </div>
+        </section>
+        
+        <!-- ARCHITECTURE DIAGRAM SECTION -->
+        <section class="architecture">
+            <div class="container">
+                <h2 class="section-title">How It Works</h2>
+                <p class="section-subtitle">Simple yet powerful webhook relay architecture</p>
+                
+                <div class="diagram-container">
+                    <svg viewBox="0 0 800 550" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Definitions for gradients and styles -->
+                        <defs>
+                            <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+                                <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+                            </linearGradient>
+                            <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+                                <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <!-- GitHub Webhook Sender -->
+                        <g id="github">
+                            <rect x="50" y="50" width="140" height="100" rx="10" fill="#1e293b" stroke="url(#primaryGradient)" stroke-width="2"/>
+                            <text x="120" y="90" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="600">GitHub</text>
+                            <text x="120" y="110" text-anchor="middle" fill="#64748b" font-size="12">Webhook</text>
+                            <text x="120" y="130" text-anchor="middle" fill="#64748b" font-size="12">Sender</text>
+                        </g>
+                        
+                        <!-- Webhook Relay Server -->
+                        <g id="server">
+                            <rect x="330" y="30" width="140" height="140" rx="10" fill="#1e293b" stroke="url(#primaryGradient)" stroke-width="3"/>
+                            <text x="400" y="70" text-anchor="middle" fill="#e2e8f0" font-size="18" font-weight="700">Server</text>
+                            <text x="400" y="95" text-anchor="middle" fill="#3b82f6" font-size="14" font-weight="600">mode=server</text>
+                            <text x="400" y="115" text-anchor="middle" fill="#64748b" font-size="11">✓ Signature validation</text>
+                            <text x="400" y="132" text-anchor="middle" fill="#64748b" font-size="11">✓ SSE broadcasting</text>
+                            <text x="400" y="149" text-anchor="middle" fill="#64748b" font-size="11">✓ Encryption</text>
+                        </g>
+                        
+                        <!-- Relay Client -->
+                        <g id="client">
+                            <rect x="330" y="230" width="140" height="160" rx="10" fill="#1e293b" stroke="url(#accentGradient)" stroke-width="3"/>
+                            <text x="400" y="270" text-anchor="middle" fill="#e2e8f0" font-size="18" font-weight="700">Client</text>
+                            <text x="400" y="295" text-anchor="middle" fill="#06b6d4" font-size="14" font-weight="600">mode=client</text>
+                            <text x="400" y="315" text-anchor="middle" fill="#64748b" font-size="11">✓ SSE connection</text>
+                            <text x="400" y="332" text-anchor="middle" fill="#64748b" font-size="11">✓ Decryption</text>
+                            <text x="400" y="349" text-anchor="middle" fill="#64748b" font-size="11">✓ HTTP forwarding</text>
+                            <rect x="335" y="360" width="130" height="22" rx="5" fill="rgba(249, 115, 22, 0.2)" stroke="#f97316" stroke-width="1"/>
+                            <text x="400" y="375" text-anchor="middle" fill="#f97316" font-size="10" font-weight="700">🔒 BEHIND NAT/FIREWALL</text>
+                        </g>
+                        
+                        <!-- Your API -->
+                        <g id="api">
+                            <rect x="610" y="230" width="140" height="160" rx="10" fill="#1e293b" stroke="url(#accentGradient)" stroke-width="2"/>
+                            <text x="680" y="270" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="600">Your API</text>
+                            <text x="680" y="290" text-anchor="middle" fill="#64748b" font-size="12">Private Endpoint</text>
+                            <text x="680" y="310" text-anchor="middle" fill="#10b981" font-size="12" font-weight="600">forward=&lt;URL&gt;</text>
+                            <rect x="615" y="320" width="130" height="22" rx="5" fill="rgba(249, 115, 22, 0.2)" stroke="#f97316" stroke-width="1"/>
+                            <text x="680" y="335" text-anchor="middle" fill="#f97316" font-size="10" font-weight="700">🔒 BEHIND NAT/FIREWALL</text>
+                            <text x="680" y="360" text-anchor="middle" fill="#64748b" font-size="10" font-style="italic">No public IP needed</text>
+                        </g>
+                        
+                        <!-- Arrow: GitHub to Server -->
+                        <g id="arrow1">
+                            <defs>
+                                <marker id="arrowhead1" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                                    <polygon points="0 0, 10 3, 0 6" fill="#3b82f6" />
+                                </marker>
+                            </defs>
+                            <path d="M 190 100 L 330 100" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrowhead1)"/>
+                            <text x="260" y="88" text-anchor="middle" fill="#3b82f6" font-size="11" font-weight="600">POST /channel</text>
+                            <text x="260" y="115" text-anchor="middle" fill="#64748b" font-size="10">X-Hub-Signature</text>
+                        </g>
+                        
+                        <!-- Arrow: Server to Client (SSE) -->
+                        <g id="arrow2">
+                            <defs>
+                                <marker id="arrowhead2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                                    <polygon points="0 0, 10 3, 0 6" fill="#8b5cf6" />
+                                </marker>
+                            </defs>
+                            <path d="M 400 170 L 400 230" stroke="#8b5cf6" stroke-width="2" fill="none" marker-end="url(#arrowhead2)" stroke-dasharray="5,5"/>
+                            <text x="460" y="195" text-anchor="start" fill="#8b5cf6" font-size="11" font-weight="600">SSE Stream</text>
+                            <text x="460" y="210" text-anchor="start" fill="#64748b" font-size="10">event: webhook</text>
+                        </g>
+                        
+                        <!-- Arrow: Client to API -->
+                        <g id="arrow3">
+                            <defs>
+                                <marker id="arrowhead3" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                                    <polygon points="0 0, 10 3, 0 6" fill="#06b6d4" />
+                                </marker>
+                            </defs>
+                            <path d="M 470 310 L 610 310" stroke="#06b6d4" stroke-width="2" fill="none" marker-end="url(#arrowhead3)"/>
+                            <text x="540" y="295" text-anchor="middle" fill="#06b6d4" font-size="11" font-weight="600">POST forward</text>
+                            <text x="540" y="328" text-anchor="middle" fill="#64748b" font-size="10">Decrypted payload</text>
+                        </g>
+                        
+                        <!-- Labels -->
+                        <text x="120" y="190" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="600">1️⃣ Webhook arrives</text>
+                        <text x="320" y="200" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="600">2️⃣ Broadcast SSE</text>
+                        <text x="540" y="410" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="600">3️⃣ Forward to API</text>
+                        
+                        <!-- Bottom note -->
+                        <text x="400" y="500" text-anchor="middle" fill="#64748b" font-size="13" font-style="italic">
+                            Both client and API can be behind NAT/firewall - webhooks flow via outbound SSE, no port forwarding needed
+                        </text>
+                    </svg>
+                </div>
+            </div>
+        </section>
+        
+        <!-- FEATURES SECTION -->
+        <section class="features">
+            <div class="container">
+                <h2 class="section-title">Why Webhook Relay?</h2>
+                <p class="section-subtitle">Built for security, performance, and ease of deployment</p>
+                
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">🔒</div>
+                        <h3>Secure by Default</h3>
+                        <p>HMAC signature validation for GitHub, GitLab, and LINE webhooks. Optional RSA encryption for sensitive payloads.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">⚡</div>
+                        <h3>Built with Rust</h3>
+                        <p>High-performance webhook relay server leveraging Rust's safety and concurrency guarantees.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">📡</div>
+                        <h3>SSE Broadcasting</h3>
+                        <p>Real-time webhook delivery via Server-Sent Events with automatic channel management and cleanup.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">🔄</div>
+                        <h3>Works Behind NAT</h3>
+                        <p>Client uses outbound SSE connections, allowing webhook delivery to services behind NAT/firewall without port forwarding or VPN.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">🎯</div>
+                        <h3>Channel Isolation</h3>
+                        <p>Multiple isolated channels with independent secrets and encryption keys for multi-tenant deployments.</p>
+                    </div>
+                    
+                    <div class="feature-card">
+                        <div class="feature-icon">☁️</div>
+                        <h3>Juju Integration</h3>
+                        <p>Deploy with a single command using Juju charm. Production-ready with systemd integration.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <!-- DEPLOYMENT MODES SECTION -->
+        <section class="deployment-modes">
+            <div class="container">
+                <h2 class="section-title">Deployment Modes</h2>
+                <p class="section-subtitle">Flexible architecture for any use case</p>
+                
+                <div class="modes-grid">
+                    <div class="mode-card">
+                        <span class="mode-badge">SERVER MODE</span>
+                        <h3>Webhook Relay Server</h3>
+                        <p>Accept webhooks via HTTP POST and broadcast to SSE clients</p>
+                        
+                        <ul class="mode-features">
+                            <li>HMAC signature validation</li>
+                            <li>Multiple channel support (up to 10)</li>
+                            <li>Optional RSA encryption per channel</li>
+                            <li>Automatic channel cleanup</li>
+                            <li>Configurable ping intervals</li>
+                        </ul>
+                        
+                        <div class="code-block">
+                            <pre><span class="comment"># Standalone deployment</span>
+<span class="command">PORT</span>=3000 <span class="command">HOST</span>=0.0.0.0 webhook-relay
+
+<span class="comment"># Juju deployment</span>
+<span class="command">juju deploy webhook-relay</span> webhook-server \
+  --config mode=server \
+  --config port=3000 \
+  --config channelId0=<span class="string">"$(uuidgen | sha1sum | awk '{print $1}')"</span> \
+  --config secret0=<span class="string">"your-webhook-secret"</span> \
+  --config key0=<span class="string">"$(cat public_key.pem)"</span></pre>
+                        </div>
+                    </div>
+                    
+                    <div class="mode-card">
+                        <span class="mode-badge">CLIENT MODE</span>
+                        <h3>Relay Client (relayd)</h3>
+                        <p>Connect to server and forward webhooks to HTTP endpoints behind NAT/firewall</p>
+                        
+                        <ul class="mode-features">
+                            <li>Works behind NAT (outbound SSE only)</li>
+                            <li>No port forwarding required</li>
+                            <li>RSA payload decryption</li>
+                            <li>HTTP POST forwarding</li>
+                            <li>Automatic reconnection</li>
+                            <li>Ping event filtering</li>
+                        </ul>
+                        
+                        <div class="code-block">
+                            <pre><span class="comment"># Standalone: Forward to HTTP endpoint</span>
+<span class="command">relayd</span> <span class="string">"http://server:3000/channel"</span> \
+  private_key.pem \
+  <span class="string">"http://api.example.com/webhook"</span>
+
+<span class="comment"># Or use /dev/null if server doesn't encrypt</span>
+<span class="command">relayd</span> <span class="string">"http://server:3000/channel"</span> \
+  /dev/null \
+  <span class="string">"http://api.example.com/webhook"</span>
+
+<span class="comment"># Juju: Deploy client with forwarding</span>
+<span class="command">juju deploy webhook-relay</span> relayd \
+  --config mode=client \
+  --config url=<span class="string">"http://webhook-server:3000/&lt;channelId&gt;"</span> \
+  --config key=<span class="string">"$(cat private_key.pem)"</span> \
+  --config forward=<span class="string">"http://api.example.com/webhook"</span></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+    
+    <footer>
+        <div class="container">
+            <div class="badges">
+                <a href="https://github.com/fourdollars/webhook-relay/actions/workflows/test.yaml">
+                    <img src="https://github.com/fourdollars/webhook-relay/actions/workflows/test.yaml/badge.svg" alt="Tests">
+                </a>
+                <a href="https://charmhub.io/webhook-relay">
+                    <img src="https://charmhub.io/webhook-relay/badge.svg" alt="CharmHub">
+                </a>
+                <a href="https://opensource.org/licenses/MIT">
+                    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
+                </a>
+            </div>
+            <p>
+                Built with ❤️ by <a href="https://github.com/fourdollars">Shih-Yuan Lee (FourDollars)</a>
+            </p>
+            <p>
+                Licensed under the <a href="https://opensource.org/licenses/MIT">MIT License</a>
+            </p>
+        </div>
+    </footer>
+</body>
+</html>
