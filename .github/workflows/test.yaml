@@ -1,0 +1,203 @@
+name: Test Charm
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'charm/**'
+      - 'server/**'
+      - 'client/**'
+      - '.github/workflows/test.yaml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'charm/**'
+      - 'server/**'
+      - 'client/**'
+      - '.github/workflows/test.yaml'
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint Python Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        working-directory: charm
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort
+          pip install -r requirements.txt
+      
+      - name: Run flake8
+        working-directory: charm
+        run: flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
+      
+      - name: Check code formatting with black
+        working-directory: charm
+        run: black --check src/ tests/
+      
+      - name: Check import sorting with isort
+        working-directory: charm
+        run: isort --check-only src/ tests/
+
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        working-directory: charm
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install coverage pytest
+      
+      - name: Run unit tests with coverage
+        working-directory: charm
+        run: |
+          export PYTHONPATH="${PYTHONPATH}:${PWD}/src"
+          coverage run -m pytest tests/
+          coverage report -m
+          coverage xml
+      
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./charm/coverage.xml
+          flags: unittests
+          name: charm-coverage
+
+  build-rust:
+    name: Build Rust Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      
+      - name: Build webhook-relay server
+        run: cargo build --release --manifest-path=server/Cargo.toml
+      
+      - name: Build relayd client
+        run: cargo build --release --manifest-path=client/Cargo.toml
+      
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-binaries
+          path: |
+            target/release/webhook-relay
+            target/release/relayd
+
+  pack-charm:
+    name: Pack Charm
+    runs-on: ubuntu-latest
+    needs: [lint, unit-test, build-rust]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup LXD
+        uses: canonical/setup-lxd@main
+      
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+      
+      - name: Download Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries
+          path: target/release/
+      
+      - name: Make binaries executable
+        run: |
+          chmod +x target/release/webhook-relay
+          chmod +x target/release/relayd
+      
+      - name: Create bin directory in charm
+        run: mkdir -p charm/bin
+      
+      - name: Copy binaries to charm
+        run: |
+          cp target/release/webhook-relay charm/bin/
+          cp target/release/relayd charm/bin/
+      
+      - name: Pack charm
+        working-directory: charm
+        run: charmcraft pack
+      
+      - name: Upload charm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhook-relay-charm
+          path: charm/*.charm
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [pack-charm]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup LXD
+        uses: canonical/setup-lxd@main
+      
+      - name: Setup Juju
+        uses: charmed-kubernetes/actions-operator@main
+        with:
+          provider: lxd
+          juju-channel: 3.4/stable
+      
+      - name: Download charm
+        uses: actions/download-artifact@v4
+        with:
+          name: webhook-relay-charm
+          path: charm/
+      
+      - name: Deploy charm in webhook mode
+        run: |
+          juju deploy ./charm/*.charm webhook-relay --config mode=webhook --config port=3000
+          juju wait-for application webhook-relay --timeout=10m
+      
+      - name: Test webhook mode status
+        run: |
+          juju status webhook-relay
+          juju exec --unit webhook-relay/0 -- systemctl status webhook-relay
+      
+      - name: Deploy charm in relayd mode
+        run: |
+          juju deploy ./charm/*.charm relay-client --config mode=relayd --config url=http://test.example.com/test
+          juju wait-for application relay-client --timeout=10m
+      
+      - name: Test relayd mode status
+        run: |
+          juju status relay-client
+          juju exec --unit relay-client/0 -- systemctl status webhook-relay
+      
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          juju debug-log --replay --no-tail
+          juju status

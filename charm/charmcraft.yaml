@@ -1,0 +1,233 @@
+type: charm
+name: webhook-relay
+title: Webhook Relay
+summary: SSE webhook relay server with signature checking and encrypted payload support
+description: |
+  A Server-Sent Events (SSE) webhook relay server implemented in Rust.
+  
+  Supports two operational modes:
+  - webhook: Acts as a relay server accepting webhook POST requests and broadcasting
+    them via SSE to subscribed clients. Supports signature validation and optional
+    encryption with public keys.
+  - relayd: Acts as a relay client connecting to a webhook server, receiving and
+    decrypting messages with a private key.
+  
+  Features:
+  - HMAC signature validation (X-Hub-Signature, X-Gitlab-Token, X-Line-Signature)
+  - Asymmetric encryption with RSA public/private keys
+  - Channel-based message broadcasting
+  - Automatic channel cleanup
+  - Heartbeat/ping mechanism
+
+base: ubuntu@24.04
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+parts:
+  charm:
+    plugin: python
+    source: .
+    python-requirements:
+      - requirements.txt
+  
+  binaries:
+    plugin: dump
+    source: bin/
+    organize:
+      webhook-relay: bin/webhook-relay
+      relayd: bin/relayd
+
+
+config:
+  options:
+    mode:
+      type: string
+      default: webhook
+      description: |
+        Operation mode: 'webhook' (server mode) or 'relayd' (client mode).
+        
+        - webhook: Run as SSE webhook relay server
+        - relayd: Run as relay client connecting to a webhook server
+    
+    # Webhook mode configuration (server)
+    host:
+      type: string
+      default: "0.0.0.0"
+      description: Host address to bind the webhook server (webhook mode only)
+    
+    port:
+      type: int
+      default: 3000
+      description: Port to bind the webhook server (webhook mode only)
+    
+    auth-user:
+      type: string
+      default: "admin"
+      description: Admin username for /admin endpoint (webhook mode only)
+    
+    auth-pass:
+      type: string
+      default: ""
+      description: Admin password for /admin endpoint (webhook mode only)
+    
+    public-path:
+      type: string
+      default: ""
+      description: Public path prefix for the application (webhook mode only)
+    
+    base-path:
+      type: string
+      default: ""
+      description: Base path for the webhook relay endpoints (webhook mode only)
+    
+    ping-interval-ms:
+      type: int
+      default: 7500
+      description: Ping interval in milliseconds for heartbeat (webhook mode only)
+    
+    # Secret and key configuration for webhook mode (0-9 indexed)
+    channelId0:
+      type: string
+      default: ""
+      description: |
+        Channel ID for channel 0 (webhook mode only).
+        MUST be exactly 40-character hexadecimal string (SHA1 format).
+        Generate with: uuidgen | sha1sum | awk '{print $1}'
+        Used as webhook URL path: http://server:port/{channelId0}
+    secret0:
+      type: string
+      default: ""
+      description: Secret key for channel 0 signature validation (webhook mode)
+    channelId1:
+      type: string
+      default: ""
+      description: |
+        Channel ID for channel 1 (webhook mode only).
+        MUST be exactly 40-character hexadecimal string (SHA1 format).
+    secret1:
+      type: string
+      default: ""
+      description: Secret key for channel 1 signature validation (webhook mode)
+    channelId2:
+      type: string
+      default: ""
+      description: Channel ID for channel 2 (40-char hex SHA1, webhook mode only)
+    secret2:
+      type: string
+      default: ""
+      description: Secret key for channel 2 signature validation (webhook mode)
+    channelId3:
+      type: string
+      default: ""
+      description: Channel ID for channel 3 (40-char hex SHA1, webhook mode only)
+    secret3:
+      type: string
+      default: ""
+      description: Secret key for channel 3 signature validation (webhook mode)
+    channelId4:
+      type: string
+      default: ""
+      description: Channel ID for channel 4 (40-char hex SHA1, webhook mode only)
+    secret4:
+      type: string
+      default: ""
+      description: Secret key for channel 4 signature validation (webhook mode)
+    channelId5:
+      type: string
+      default: ""
+      description: Channel ID for channel 5 (40-char hex SHA1, webhook mode only)
+    secret5:
+      type: string
+      default: ""
+      description: Secret key for channel 5 signature validation (webhook mode)
+    channelId6:
+      type: string
+      default: ""
+      description: Channel ID for channel 6 (40-char hex SHA1, webhook mode only)
+    secret6:
+      type: string
+      default: ""
+      description: Secret key for channel 6 signature validation (webhook mode)
+    channelId7:
+      type: string
+      default: ""
+      description: Channel ID for channel 7 (40-char hex SHA1, webhook mode only)
+    secret7:
+      type: string
+      default: ""
+      description: Secret key for channel 7 signature validation (webhook mode)
+    channelId8:
+      type: string
+      default: ""
+      description: Channel ID for channel 8 (40-char hex SHA1, webhook mode only)
+    secret8:
+      type: string
+      default: ""
+      description: Secret key for channel 8 signature validation (webhook mode)
+    channelId9:
+      type: string
+      default: ""
+      description: Channel ID for channel 9 (40-char hex SHA1, webhook mode only)
+    secret9:
+      type: string
+      default: ""
+      description: Secret key for channel 9 signature validation (webhook mode)
+    
+    key0:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 0 encryption (webhook mode)
+    key1:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 1 encryption (webhook mode)
+    key2:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 2 encryption (webhook mode)
+    key3:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 3 encryption (webhook mode)
+    key4:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 4 encryption (webhook mode)
+    key5:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 5 encryption (webhook mode)
+    key6:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 6 encryption (webhook mode)
+    key7:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 7 encryption (webhook mode)
+    key8:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 8 encryption (webhook mode)
+    key9:
+      type: string
+      default: ""
+      description: RSA public key PEM for channel 9 encryption (webhook mode)
+    
+    # Relayd mode configuration (client)
+    url:
+      type: string
+      default: ""
+      description: SSE endpoint URL to connect to (relayd mode only)
+    
+    secret:
+      type: string
+      default: ""
+      description: Shared secret for signature validation (relayd mode only)
+    
+    key:
+      type: string
+      default: ""
+      description: RSA private key PEM for decryption (relayd mode only)

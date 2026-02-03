@@ -1,0 +1,7 @@
+ops>=2.0
+opentelemetry-api
+pyyaml
+websocket-client
+importlib-metadata
+typing-extensions
+zipp
