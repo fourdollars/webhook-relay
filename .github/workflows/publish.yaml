@@ -26,7 +26,9 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Setup LXD
-        uses: canonical/setup-lxd@main
+        uses: canonical/setup-lxd@v1
+        with:
+          channel: 5.21/stable
       
       - name: Install charmcraft
         run: sudo snap install charmcraft --classic
@@ -83,10 +85,7 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMCRAFT_AUTH }}
         run: |
-          # Login to Charmhub
-          echo "$CHARMCRAFT_AUTH" | charmcraft login --with -
-          
-          # Upload charm
+          # Upload charm (CHARMCRAFT_AUTH is automatically used for authentication)
           CHARM_FILE=$(ls *.charm | head -n 1)
           charmcraft upload "$CHARM_FILE"
           
