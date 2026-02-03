@@ -44,15 +44,20 @@ class TestWebhookRelayCharm(unittest.TestCase):
         mock_bin = MagicMock()
         mock_bin.exists.return_value = False
 
-        # Mock Path to return the mock_bin for any path construction
-        mock_path_instance = MagicMock()
-        mock_path_instance.__truediv__ = MagicMock(return_value=mock_bin)
-        mock_path.return_value = mock_path_instance
+        # Mock Path() call and the / operations
+        mock_charm_dir_path = MagicMock()
+        mock_bin_dir = MagicMock()
+        mock_bin_dir.__truediv__ = MagicMock(return_value=mock_bin)
+        mock_charm_dir_path.__truediv__ = MagicMock(return_value=mock_bin_dir)
+        mock_path.return_value = mock_charm_dir_path
 
         self.harness.charm.on.install.emit()
 
         # _stored.installed should not be set when binaries are missing
-        self.assertFalse(getattr(self.harness.charm._stored, "installed", False))
+        self.assertFalse(
+            hasattr(self.harness.charm._stored, "installed")
+            and self.harness.charm._stored.installed
+        )
 
     @patch("charm.Path")
     @patch("charm.subprocess.run")
@@ -78,10 +83,15 @@ class TestWebhookRelayCharm(unittest.TestCase):
         # Verify mode was stored
         self.assertEqual(self.harness.charm._stored.mode, "server")
 
+    @patch("charm.Path")
     @patch("charm.subprocess.run")
-    def test_config_changed_relayd_mode(self, mock_run):
+    def test_config_changed_relayd_mode(self, mock_run, mock_path_class):
         """Test configuration change to client mode."""
         self.harness.charm._stored.installed = True
+
+        # Mock Path for key file operations
+        mock_key_file = MagicMock()
+        mock_path_class.return_value = mock_key_file
 
         # Set configuration for client mode
         self.harness.update_config(
@@ -104,7 +114,9 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.harness.update_config({"mode": "client"})
 
         # Should be in BlockedStatus due to missing URL
-        self.assertIsInstance(self.harness.charm.unit.status, tuple)
+        from ops.model import BlockedStatus
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
 
     def test_config_changed_invalid_mode(self):
         """Test configuration fails with invalid mode."""
