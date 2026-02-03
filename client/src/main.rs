@@ -176,6 +176,7 @@ async fn handle_payload(
     Ok(())
 }
 
+#[allow(deprecated)]
 fn decrypt_symmetric(
     encrypted_string: &str,
     private_key_path: &PathBuf,
