@@ -74,6 +74,58 @@ sequenceDiagram
     deactivate HttpServer
     deactivate SSEClient
 ```
+
+## Features
+
+### Server (`webhook-relay`)
+- SSE-based webhook broadcasting with channel isolation
+- HMAC signature validation for webhook authentication
+- Optional asymmetric encryption for payloads
+- Automatic channel cleanup for inactive subscribers
+- Configurable ping intervals for connection keep-alive
+
+### Client (`relayd`)
+- SSE client that connects to webhook-relay server
+- Automatic reconnection with exponential backoff
+- Decrypts encrypted payloads using RSA private key
+- **HTTP forwarding**: POST webhook payloads to a URL instead of stdout
+- Ping event filtering: heartbeat messages are not forwarded
+
+## Usage
+
+### Server
+```bash
+# Start webhook relay server
+PORT=3000 HOST=0.0.0.0 PING_INTERVAL_MS=2000 webhook-relay
+```
+
+### Client
+
+**Print webhooks to stdout (default behavior):**
+```bash
+relayd <sse_url> <private_key_path>
+```
+
+**Forward webhooks to HTTP endpoint:**
+```bash
+relayd <sse_url> <private_key_path> <forward_post_url>
+```
+
+**Examples:**
+```bash
+# Print to stdout
+relayd "http://localhost:3000/channel123" ./private_key.pem
+
+# Forward to HTTP endpoint
+relayd "http://localhost:3000/channel123" /dev/null "http://api.example.com/webhook"
+```
+
+When `forward_post_url` is specified:
+- Webhook payloads are POSTed as JSON to the URL
+- Ping events are ignored (only update heartbeat)
+- Returns HTTP 200 OK if forwarding succeeds
+- Original payload structure is preserved
+
 ## License
 
 This project is licensed under the MIT License

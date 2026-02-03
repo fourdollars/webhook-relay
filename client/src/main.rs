@@ -141,6 +141,41 @@ fn decrypt_asymmetric(
     Ok(decrypted)
 }
 
+async fn handle_payload(
+    payload: &Payload,
+    forward_post_url: &Option<String>,
+    http_client: &reqwest::Client,
+) -> Result<(), AppError> {
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| AppError::Other(format!("Failed to serialize payload: {}", e)))?;
+
+    if let Some(url) = forward_post_url {
+        match http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .body(payload_json.clone())
+            .send()
+            .await
+        {
+            Ok(response) => {
+                if response.status().is_success() {
+                    log::info!("Successfully forwarded payload to {}, status: {}", url, response.status());
+                } else {
+                    log::warn!("Forward to {} returned non-success status: {}", url, response.status());
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to forward payload to {}: {}", url, e);
+                return Err(AppError::Other(format!("HTTP POST failed: {}", e)));
+            }
+        }
+    } else {
+        println!("{}", payload_json);
+    }
+
+    Ok(())
+}
+
 fn decrypt_symmetric(
     encrypted_string: &str,
     private_key_path: &PathBuf,
@@ -179,20 +214,24 @@ async fn main() -> Result<(), AppError> {
 
     let args: Vec<String> = env::args().collect();
 
-    if args.len() != 3 {
+    if args.len() < 3 || args.len() > 4 {
         eprintln!("Webhook Relay Client");
         eprintln!();
         eprintln!("USAGE:");
-        eprintln!("    {} <url> <private_key_path>", args[0]);
+        eprintln!("    {} <url> <private_key_path> [forward_post_url]", args[0]);
         eprintln!();
         eprintln!("ARGS:");
         eprintln!("    <url>              Server-sent events URL to connect to");
         eprintln!("    <private_key_path> Path to RSA private key file for decryption");
+        eprintln!("    [forward_post_url] Optional URL to forward webhook payloads via HTTP POST");
         eprintln!();
         eprintln!("BEHAVIOR:");
         eprintln!("    The client connects to the SSE endpoint and monitors for webhook events.");
         eprintln!("    It automatically detects server disconnections via heartbeat monitoring");
         eprintln!("    and attempts to reconnect with exponential backoff.");
+        eprintln!();
+        eprintln!("    If forward_post_url is provided, webhook payloads will be POSTed to that URL");
+        eprintln!("    instead of being printed to stdout. Ping/heartbeat events are always ignored.");
         eprintln!();
         eprintln!("HEARTBEAT & RECONNECTION:");
         eprintln!(
@@ -217,6 +256,11 @@ async fn main() -> Result<(), AppError> {
 
     let url = &args[1];
     let private_key_path = PathBuf::from(&args[2]);
+    let forward_post_url = if args.len() == 4 {
+        Some(args[3].clone())
+    } else {
+        None
+    };
     let config = HeartbeatConfig::default();
 
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -224,7 +268,7 @@ async fn main() -> Result<(), AppError> {
         is_connected: false,
     }));
 
-    match run_client_with_reconnection(url, &private_key_path, config, connection_state).await {
+    match run_client_with_reconnection(url, &private_key_path, forward_post_url, config, connection_state).await {
         Ok(_) => {
             log::info!("Client exited successfully");
             Ok(())
@@ -247,6 +291,7 @@ async fn main() -> Result<(), AppError> {
 async fn run_client_with_reconnection(
     url: &str,
     private_key_path: &PathBuf,
+    forward_post_url: Option<String>,
     config: HeartbeatConfig,
     connection_state: Arc<Mutex<ConnectionState>>,
 ) -> Result<(), AppError> {
@@ -272,7 +317,7 @@ async fn run_client_with_reconnection(
         }
 
         let result =
-            run_client_session(client, private_key_path, &config, connection_state.clone()).await;
+            run_client_session(client, private_key_path, forward_post_url.clone(), &config, connection_state.clone()).await;
 
         match result {
             Ok(_) => {
@@ -333,10 +378,12 @@ async fn run_client_with_reconnection(
 async fn run_client_session(
     client: impl es::Client,
     private_key_path: &PathBuf,
+    forward_post_url: Option<String>,
     config: &HeartbeatConfig,
     connection_state: Arc<Mutex<ConnectionState>>,
 ) -> Result<(), AppError> {
     let private_key_path = private_key_path.clone();
+    let http_client = reqwest::Client::new();
 
     // Start heartbeat monitoring task
     let heartbeat_state = connection_state.clone();
@@ -394,11 +441,8 @@ async fn run_client_session(
                                     }
                                 };
                                 if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
-                                    match serde_json::to_string(&payload) {
-                                        Ok(payload) => {
-                                            println!("{}", payload);
-                                        }
-                                        Err(e) => eprintln!("Webhook event unknown data: {}", e),
+                                    if let Err(e) = handle_payload(&payload, &forward_post_url, &http_client).await {
+                                        eprintln!("Failed to handle webhook payload: {}", e);
                                     }
                                 } else {
                                     eprintln!("Webhook event unknown data: {:?}", data);
@@ -409,13 +453,8 @@ async fn run_client_session(
                                     if let Ok(payload) =
                                         serde_json::from_slice::<Payload>(decrypted.as_bytes())
                                     {
-                                        match serde_json::to_string(&payload) {
-                                            Ok(payload) => {
-                                                println!("{}", payload);
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Encrypted event unknown data: {}", e)
-                                            }
+                                        if let Err(e) = handle_payload(&payload, &forward_post_url, &http_client).await {
+                                            eprintln!("Failed to handle encrypted payload: {}", e);
                                         }
                                     } else {
                                         eprintln!("Encrypted event unknown data: {:?}", decrypted);
