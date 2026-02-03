@@ -201,3 +201,152 @@ jobs:
         run: |
           juju debug-log --replay --no-tail
           juju status
+
+  functional-test:
+    name: Functional Tests (Forwarding)
+    runs-on: ubuntu-latest
+    needs: [build-rust]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download Rust binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-binaries
+          path: target/release/
+      
+      - name: Make binaries executable
+        run: |
+          chmod +x target/release/webhook-relay
+          chmod +x target/release/relayd
+      
+      - name: Setup test environment
+        run: |
+          mkdir -p /tmp/webhook-test/secret
+          CHANNEL_ID=$(echo -n "test-channel" | sha1sum | awk '{print $1}')
+          echo -n "test-secret-123" > /tmp/webhook-test/secret/$CHANNEL_ID
+          echo "CHANNEL_ID=$CHANNEL_ID" >> $GITHUB_ENV
+          echo "Test environment ready with channel: $CHANNEL_ID"
+      
+      - name: Start webhook server
+        run: |
+          cd /tmp/webhook-test
+          PORT=3000 HOST=127.0.0.1 PING_INTERVAL_MS=3000 \
+            $GITHUB_WORKSPACE/target/release/webhook-relay > server.log 2>&1 &
+          echo $! > server.pid
+          sleep 2
+          echo "Webhook server started"
+      
+      - name: Start HTTP receiver
+        run: |
+          python3 -c "
+          import http.server
+          import socketserver
+          import json
+          from datetime import datetime
+          
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  length = int(self.headers.get('Content-Length', 0))
+                  data = self.rfile.read(length)
+                  timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                  print(f'[{timestamp}] RECEIVED: {data.decode(\"utf-8\")}', flush=True)
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'OK')
+              def log_message(self, format, *args):
+                  pass
+          
+          print('Receiver ready on port 8888', flush=True)
+          with socketserver.TCPServer(('127.0.0.1', 8888), Handler) as httpd:
+              httpd.serve_forever()
+          " > /tmp/receiver.log 2>&1 &
+          echo $! > /tmp/receiver.pid
+          sleep 2
+          echo "HTTP receiver started"
+      
+      - name: Start relayd with forwarding
+        run: |
+          RUST_LOG=info $GITHUB_WORKSPACE/target/release/relayd \
+            "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
+            /dev/null \
+            http://127.0.0.1:8888/webhook > /tmp/relayd.log 2>&1 &
+          echo $! > /tmp/relayd.pid
+          sleep 3
+          echo "Relayd started with forwarding"
+      
+      - name: Test webhook forwarding
+        run: |
+          # Send test webhook
+          PAYLOAD='{"test":"ci_webhook","message":"Testing forwarding","timestamp":'$(date +%s)'}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "test-secret-123" | awk '{print $2}')
+          
+          echo "Sending webhook to channel: ${{ env.CHANNEL_ID }}"
+          curl -X POST "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+          
+          sleep 2
+          
+          # Verify webhook was forwarded
+          if grep -q "RECEIVED.*ci_webhook" /tmp/receiver.log; then
+            echo "✅ Webhook successfully forwarded"
+          else
+            echo "❌ Webhook was NOT forwarded"
+            exit 1
+          fi
+          
+          # Verify relayd logged the forward
+          if grep -q "Successfully forwarded payload" /tmp/relayd.log; then
+            echo "✅ Relayd confirmed forwarding"
+          else
+            echo "❌ Relayd did not confirm forwarding"
+            exit 1
+          fi
+      
+      - name: Test ping event filtering
+        run: |
+          # Get initial receiver log size
+          INITIAL_SIZE=$(wc -l < /tmp/receiver.log)
+          
+          echo "Waiting 6 seconds for ping events (interval: 3s)..."
+          sleep 6
+          
+          # Check if receiver got any ping events (it should NOT)
+          FINAL_SIZE=$(wc -l < /tmp/receiver.log)
+          if [ "$FINAL_SIZE" -eq "$INITIAL_SIZE" ]; then
+            echo "✅ Ping events were NOT forwarded (correct behavior)"
+          else
+            echo "❌ Receiver log changed during ping period:"
+            tail -10 /tmp/receiver.log
+            exit 1
+          fi
+          
+          # Verify relayd received pings
+          if grep -q "ping" /tmp/relayd.log || grep -q "heartbeat" /tmp/relayd.log; then
+            echo "✅ Relayd received ping events but did not forward them"
+          else
+            echo "⚠️  Warning: No ping events detected in relayd log"
+          fi
+      
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Webhook Server Log ==="
+          cat /tmp/webhook-test/server.log || echo "No server log"
+          echo ""
+          echo "=== Relayd Log ==="
+          cat /tmp/relayd.log || echo "No relayd log"
+          echo ""
+          echo "=== Receiver Log ==="
+          cat /tmp/receiver.log || echo "No receiver log"
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          [ -f /tmp/relayd.pid ] && kill $(cat /tmp/relayd.pid) 2>/dev/null || true
+          [ -f /tmp/receiver.pid ] && kill $(cat /tmp/receiver.pid) 2>/dev/null || true
+          [ -f /tmp/webhook-test/server.pid ] && kill $(cat /tmp/webhook-test/server.pid) 2>/dev/null || true
