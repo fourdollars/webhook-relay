@@ -5,8 +5,8 @@
 """Charm for webhook-relay service.
 
 This charm deploys the webhook-relay service in two operational modes:
-- webhook: SSE relay server accepting webhooks and broadcasting via SSE
-- relayd: Relay client connecting to webhook server and decrypting messages
+- server: SSE relay server accepting webhooks and broadcasting via SSE
+- client: Relay client connecting to webhook server and decrypting messages
 """
 
 import logging
@@ -70,17 +70,17 @@ class WebhookRelayCharm(CharmBase):
         mode = self.config["mode"]
 
         # Validate mode
-        if mode not in ["webhook", "relayd"]:
+        if mode not in ["server", "client"]:
             self.unit.status = BlockedStatus(
-                f"Invalid mode: {mode}. Must be 'webhook' or 'relayd'"
+                f"Invalid mode: {mode}. Must be 'server' or 'client'"
             )
             return
 
         # Mode-specific configuration and validation
-        if mode == "webhook":
+        if mode == "server":
             if not self._configure_webhook_mode():
                 return
-        elif mode == "relayd":
+        elif mode == "client":
             if not self._configure_relayd_mode():
                 return
 
@@ -296,6 +296,14 @@ WantedBy=multi-user.target
         # Add private key if configured
         if self.config.get("key"):
             cmd_args.append("/var/lib/webhook-relay/private_key.pem")
+        else:
+            cmd_args.append("/dev/null")
+
+        # Add forward URL if configured
+        forward_url = self.config.get("forward", "")
+        if forward_url:
+            cmd_args.append(forward_url)
+            logger.info(f"Configured forwarding to: {forward_url}")
 
         return f"""[Unit]
 Description=Webhook Relay Client (relayd)

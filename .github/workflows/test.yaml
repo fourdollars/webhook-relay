@@ -178,7 +178,7 @@ jobs:
       
       - name: Deploy charm in webhook mode
         run: |
-          juju deploy ./charm/*.charm webhook-relay --config mode=webhook --config port=3000
+          juju deploy ./charm/*.charm webhook-relay --config mode=server --config port=3000
           juju wait-for application webhook-relay --timeout=10m
       
       - name: Test webhook mode status
@@ -188,7 +188,7 @@ jobs:
       
       - name: Deploy charm in relayd mode
         run: |
-          juju deploy ./charm/*.charm relay-client --config mode=relayd --config url=http://test.example.com/test
+          juju deploy ./charm/*.charm relay-client --config mode=client --config url=http://test.example.com/test
           juju wait-for application relay-client --timeout=10m
       
       - name: Test relayd mode status

@@ -5,8 +5,8 @@ A Juju Charm for deploying the webhook-relay service, a Server-Sent Events (SSE)
 ## Features
 
 - **Two operational modes:**
-  - **webhook**: Acts as a relay server accepting webhook POST requests and broadcasting them via SSE
-  - **relayd**: Acts as a relay client connecting to a webhook server
+  - **server**: Acts as a relay server accepting webhook POST requests and broadcasting them via SSE
+  - **client**: Acts as a relay client connecting to a webhook server
   
 - **Security features:**
   - HMAC signature validation (X-Hub-Signature, X-Gitlab-Token, X-Line-Signature)
@@ -20,14 +20,14 @@ A Juju Charm for deploying the webhook-relay service, a Server-Sent Events (SSE)
 
 ## Usage
 
-### Deploy in webhook mode (server)
+### Deploy in server mode (server)
 
 ```bash
 # Generate a channel ID (40-character SHA1 hash)
 CHANNEL_ID=$(uuidgen | sha1sum | awk '{print $1}')
 
 juju deploy webhook-relay
-juju config webhook-relay mode=webhook
+juju config webhook-relay mode=server
 juju config webhook-relay port=3000
 juju config webhook-relay channelId0="$CHANNEL_ID"
 juju config webhook-relay secret0="your-secret-key-for-channel-0"
@@ -37,11 +37,11 @@ juju config webhook-relay key0="$(cat public_key_0.pem)"
 echo "Webhook URL: http://your-server:3000/$CHANNEL_ID"
 ```
 
-### Deploy in relayd mode (client)
+### Deploy in client mode (client)
 
 ```bash
 juju deploy webhook-relay relay-client
-juju config relay-client mode=relayd
+juju config relay-client mode=client
 juju config relay-client url="http://webhook-server:3000/channel-id"
 juju config relay-client secret="shared-secret"
 juju config relay-client key="$(cat private_key.pem)"
@@ -66,15 +66,16 @@ juju config relay-client key="$(cat private_key.pem)"
 - `secret0`-`secret9`: Secret keys for signature validation (per channel)
 - `key0`-`key9`: RSA public keys for encryption (per channel, PEM format)
 
-### Relayd mode options
+### Client mode options
 
 - `url`: SSE endpoint URL to connect to (required)
+- `forward`: HTTP POST URL to forward webhook payloads (optional). If specified, decrypted webhook payloads will be POSTed to this URL instead of stdout. Ping events are never forwarded.
 - `secret`: Shared secret for signature validation
 - `key`: RSA private key for decryption (PEM format)
 
 ## Channel Configuration
 
-The webhook mode supports up to 10 channels (0-9), each with its own:
+The server mode supports up to 10 channels (0-9), each with its own:
 - **Channel ID**: 40-character hexadecimal SHA1 hash used as the webhook URL path
 - **Secret key**: For HMAC signature validation
 - **Public key**: For RSA encryption (optional)

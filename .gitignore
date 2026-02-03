@@ -1,1 +1,28 @@
+# Rust build artifacts
 /target
+
+# Charm build artifacts
+charm/bin/
+charm/*.charm
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+
+# Juju/Charmcraft
+charm/venv/
+.tox/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

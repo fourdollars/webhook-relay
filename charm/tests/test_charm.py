@@ -51,13 +51,13 @@ class TestWebhookRelayCharm(unittest.TestCase):
 
     @patch("charm.subprocess.run")
     def test_config_changed_webhook_mode(self, mock_run):
-        """Test configuration change to webhook mode."""
+        """Test configuration change to server mode."""
         self.harness.charm._stored.installed = True
 
-        # Set configuration for webhook mode
+        # Set configuration for server mode
         self.harness.update_config(
             {
-                "mode": "webhook",
+                "mode": "server",
                 "host": "0.0.0.0",
                 "port": 3000,
                 "secret0": "test-secret",
@@ -66,17 +66,17 @@ class TestWebhookRelayCharm(unittest.TestCase):
         )
 
         # Verify mode was stored
-        self.assertEqual(self.harness.charm._stored.mode, "webhook")
+        self.assertEqual(self.harness.charm._stored.mode, "server")
 
     @patch("charm.subprocess.run")
     def test_config_changed_relayd_mode(self, mock_run):
-        """Test configuration change to relayd mode."""
+        """Test configuration change to client mode."""
         self.harness.charm._stored.installed = True
 
-        # Set configuration for relayd mode
+        # Set configuration for client mode
         self.harness.update_config(
             {
-                "mode": "relayd",
+                "mode": "client",
                 "url": "http://example.com/channel",
                 "secret": "shared-secret",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
@@ -84,15 +84,15 @@ class TestWebhookRelayCharm(unittest.TestCase):
         )
 
         # Verify mode was stored
-        self.assertEqual(self.harness.charm._stored.mode, "relayd")
+        self.assertEqual(self.harness.charm._stored.mode, "client")
 
     @patch("charm.subprocess.run")
     def test_config_changed_relayd_missing_url(self, mock_run):
-        """Test relayd mode fails without URL."""
+        """Test client mode fails without URL."""
         self.harness.charm._stored.installed = True
 
-        # Set configuration for relayd mode without URL
-        self.harness.update_config({"mode": "relayd", "secret": "shared-secret"})
+        # Set configuration for client mode without URL
+        self.harness.update_config({"mode": "client", "secret": "shared-secret"})
 
         # Should be in BlockedStatus due to missing URL
         self.assertIsInstance(self.harness.charm.unit.status, tuple)
@@ -108,9 +108,9 @@ class TestWebhookRelayCharm(unittest.TestCase):
 
     @patch("charm.subprocess.run")
     def test_start_service_webhook_mode(self, mock_run):
-        """Test starting service in webhook mode."""
+        """Test starting service in server mode."""
         self.harness.charm._stored.installed = True
-        self.harness.charm._stored.mode = "webhook"
+        self.harness.charm._stored.mode = "server"
 
         self.harness.charm.on.start.emit()
 
@@ -123,7 +123,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
     def test_stop_service(self, mock_run):
         """Test stopping service."""
         self.harness.charm._stored.installed = True
-        self.harness.charm._stored.mode = "webhook"
+        self.harness.charm._stored.mode = "server"
 
         self.harness.charm.on.stop.emit()
 
@@ -135,7 +135,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
         """Test webhook service file generation."""
         self.harness.update_config(
             {
-                "mode": "webhook",
+                "mode": "server",
                 "host": "127.0.0.1",
                 "port": 8000,
                 "auth-user": "admin",
@@ -159,7 +159,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
         """Test relayd service file generation."""
         self.harness.update_config(
             {
-                "mode": "relayd",
+                "mode": "client",
                 "url": "http://example.com/channel",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
             }
