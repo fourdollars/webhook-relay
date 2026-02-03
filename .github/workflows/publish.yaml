@@ -85,12 +85,11 @@ jobs:
         env:
           CHARMCRAFT_AUTH: ${{ secrets.CHARMCRAFT_AUTH }}
         run: |
-          # Upload charm (CHARMCRAFT_AUTH is automatically used for authentication)
+          # Upload charm and capture revision number (CHARMCRAFT_AUTH is automatically used)
           CHARM_FILE=$(ls *.charm | head -n 1)
-          charmcraft upload "$CHARM_FILE"
+          REVISION=$(charmcraft upload "$CHARM_FILE" --format=json | jq -r .revision)
           
-          # Get the revision number from the upload
-          REVISION=$(charmcraft revisions webhook-relay | grep "uploaded" | head -n 1 | awk '{print $1}')
+          echo "Uploaded revision: $REVISION"
           
           # Release to the appropriate channel
           CHANNEL="${{ steps.determine-channel.outputs.channel }}"
