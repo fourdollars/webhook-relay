@@ -162,13 +162,21 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Setup LXD
-        uses: canonical/setup-lxd@main
-      
-      - name: Setup Juju
-        uses: charmed-kubernetes/actions-operator@main
+        uses: canonical/setup-lxd@v1
         with:
-          provider: lxd
-          juju-channel: 3.4/stable
+          channel: 5.21/stable
+      
+      - name: Configure LXD IPv6
+        run: |
+          lxc network set lxdbr0 ipv6.address none
+          lxc network set lxdbr0 ipv6.dhcp false
+          lxc network set lxdbr0 ipv6.nat false
+      
+      - name: Install Juju
+        run: sudo snap install juju --channel 3.6/stable
+      
+      - name: Bootstrap Juju
+        run: juju bootstrap localhost test-controller --config test-mode=true
       
       - name: Download charm
         uses: actions/download-artifact@v4
