@@ -178,6 +178,9 @@ jobs:
       - name: Bootstrap Juju
         run: juju bootstrap localhost test-controller --config test-mode=true
       
+      - name: Add Juju model
+        run: juju add-model test-model
+      
       - name: Download charm
         uses: actions/download-artifact@v4
         with:
