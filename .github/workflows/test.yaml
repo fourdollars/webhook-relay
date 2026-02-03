@@ -34,8 +34,8 @@ jobs:
       - name: Install dependencies
         working-directory: charm
         run: |
-          uv pip install --system flake8 black isort
-          uv pip install --system -r requirements.txt
+          uv pip install flake8 black isort
+          uv pip install -r requirements.txt
       
       - name: Run flake8
         working-directory: charm
@@ -65,8 +65,8 @@ jobs:
       - name: Install dependencies
         working-directory: charm
         run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system coverage pytest
+          uv pip install -r requirements.txt
+          uv pip install coverage pytest
       
       - name: Run unit tests with coverage
         working-directory: charm
