@@ -2,19 +2,16 @@ name: Test Charm
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
     paths:
       - 'charm/**'
       - 'server/**'
       - 'client/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/test.yaml'
   pull_request:
-    branches: [ main, master ]
-    paths:
-      - 'charm/**'
-      - 'server/**'
-      - 'client/**'
-      - '.github/workflows/test.yaml'
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
