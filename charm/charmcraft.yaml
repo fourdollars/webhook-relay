@@ -88,19 +88,19 @@ config:
       description: Ping interval in milliseconds for heartbeat (server mode only)
     
     # Secret and key configuration for webhook mode (0-9 indexed)
-    channelId0:
+    channel0:
       type: string
       default: ""
       description: |
         Channel ID for channel 0 (server mode only).
         MUST be exactly 40-character hexadecimal string (SHA1 format).
         Generate with: uuidgen | sha1sum | awk '{print $1}'
-        Used as webhook URL path: http://server:port/{channelId0}
+        Used as webhook URL path: http://server:port/{channel0}
     secret0:
       type: string
       default: ""
       description: Secret key for channel 0 signature validation (server mode)
-    channelId1:
+    channel1:
       type: string
       default: ""
       description: |
@@ -110,7 +110,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 1 signature validation (server mode)
-    channelId2:
+    channel2:
       type: string
       default: ""
       description: Channel ID for channel 2 (40-char hex SHA1, webhook mode only)
@@ -118,7 +118,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 2 signature validation (server mode)
-    channelId3:
+    channel3:
       type: string
       default: ""
       description: Channel ID for channel 3 (40-char hex SHA1, webhook mode only)
@@ -126,7 +126,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 3 signature validation (server mode)
-    channelId4:
+    channel4:
       type: string
       default: ""
       description: Channel ID for channel 4 (40-char hex SHA1, webhook mode only)
@@ -134,7 +134,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 4 signature validation (server mode)
-    channelId5:
+    channel5:
       type: string
       default: ""
       description: Channel ID for channel 5 (40-char hex SHA1, webhook mode only)
@@ -142,7 +142,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 5 signature validation (server mode)
-    channelId6:
+    channel6:
       type: string
       default: ""
       description: Channel ID for channel 6 (40-char hex SHA1, webhook mode only)
@@ -150,7 +150,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 6 signature validation (server mode)
-    channelId7:
+    channel7:
       type: string
       default: ""
       description: Channel ID for channel 7 (40-char hex SHA1, webhook mode only)
@@ -158,7 +158,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 7 signature validation (server mode)
-    channelId8:
+    channel8:
       type: string
       default: ""
       description: Channel ID for channel 8 (40-char hex SHA1, webhook mode only)
@@ -166,7 +166,7 @@ config:
       type: string
       default: ""
       description: Secret key for channel 8 signature validation (server mode)
-    channelId9:
+    channel9:
       type: string
       default: ""
       description: Channel ID for channel 9 (40-char hex SHA1, webhook mode only)

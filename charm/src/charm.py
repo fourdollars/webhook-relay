@@ -131,7 +131,7 @@ class WebhookRelayCharm(CharmBase):
             directory.mkdir(parents=True, exist_ok=True, mode=0o755)
 
     def _validate_channel_id(self, channel_id: str) -> bool:
-        """Validate that channelId is a 40-character hexadecimal string (SHA1 format).
+        """Validate that channel is a 40-character hexadecimal string (SHA1 format).
 
         Args:
             channel_id: The channel ID to validate
@@ -155,59 +155,59 @@ class WebhookRelayCharm(CharmBase):
         """Configure webhook server mode."""
         logger.info("Configuring webhook mode")
 
-        # Validate all configured channelIds first
+        # Validate all configured channels first
         for i in range(10):
-            channel_id = self.config.get(f"channelId{i}", "")
+            channel_id = self.config.get(f"channel{i}", "")
             if channel_id and not self._validate_channel_id(channel_id):
                 self.unit.status = BlockedStatus(
-                    f"Invalid channelId{i}: must be 40-character hexadecimal (SHA1 format). "
+                    f"Invalid channel{i}: must be 40-character hexadecimal (SHA1 format). "
                     f"Generate with: uuidgen | sha1sum | awk '{{print $1}}'"
                 )
-                logger.error(f"Invalid channelId{i}: {channel_id}")
+                logger.error(f"Invalid channel{i}: {channel_id}")
                 return False
 
-        # Write secret files (secret0-9) using channelId as filename
+        # Write secret files (secret0-9) using channel as filename
         for i in range(10):
-            channel_id = self.config.get(f"channelId{i}", "")
+            channel_id = self.config.get(f"channel{i}", "")
             secret_value = self.config.get(f"secret{i}", "")
 
-            # If channelId is configured, use it as the filename
+            # If channel is configured, use it as the filename
             if channel_id and secret_value:
                 secret_file = Path("/var/lib/webhook-relay/secret") / channel_id
                 secret_file.write_text(secret_value)
                 secret_file.chmod(0o600)
                 logger.info(
-                    f"Wrote secret file for channel {i} (channelId: {channel_id})"
+                    f"Wrote secret file for channel {i} (channel: {channel_id})"
                 )
             elif secret_value:
-                # Fallback to numeric filename if no channelId specified
+                # Fallback to numeric filename if no channel specified
                 secret_file = Path("/var/lib/webhook-relay/secret") / str(i)
                 secret_file.write_text(secret_value)
                 secret_file.chmod(0o600)
                 logger.info(
-                    f"Wrote secret file for channel {i} (no channelId, using numeric)"
+                    f"Wrote secret file for channel {i} (no channel, using numeric)"
                 )
 
-        # Write public key files (key0-9) using channelId as filename
+        # Write public key files (key0-9) using channel as filename
         for i in range(10):
-            channel_id = self.config.get(f"channelId{i}", "")
+            channel_id = self.config.get(f"channel{i}", "")
             key_value = self.config.get(f"key{i}", "")
 
-            # If channelId is configured, use it as the filename
+            # If channel is configured, use it as the filename
             if channel_id and key_value:
                 key_file = Path("/var/lib/webhook-relay/pem") / channel_id
                 key_file.write_text(key_value)
                 key_file.chmod(0o644)
                 logger.info(
-                    f"Wrote public key file for channel {i} (channelId: {channel_id})"
+                    f"Wrote public key file for channel {i} (channel: {channel_id})"
                 )
             elif key_value:
-                # Fallback to numeric filename if no channelId specified
+                # Fallback to numeric filename if no channel specified
                 key_file = Path("/var/lib/webhook-relay/pem") / str(i)
                 key_file.write_text(key_value)
                 key_file.chmod(0o644)
                 logger.info(
-                    f"Wrote public key file for channel {i} (no channelId, using numeric)"
+                    f"Wrote public key file for channel {i} (no channel, using numeric)"
                 )
 
         # Create systemd service file for webhook mode

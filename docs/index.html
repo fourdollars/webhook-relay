@@ -697,7 +697,7 @@
 <span class="command">juju deploy webhook-relay</span> webhook-server \
   --config mode=server \
   --config port=3000 \
-  --config channelId0=<span class="string">"$(uuidgen | sha1sum | awk '{print $1}')"</span> \
+  --config channel0=<span class="string">"$(uuidgen | sha1sum | awk '{print $1}')"</span> \
   --config secret0=<span class="string">"your-webhook-secret"</span> \
   --config key0=<span class="string">"$(cat public_key.pem)"</span></pre>
                         </div>
@@ -731,7 +731,7 @@
 <span class="comment"># Juju: Deploy client with forwarding</span>
 <span class="command">juju deploy webhook-relay</span> relayd \
   --config mode=client \
-  --config url=<span class="string">"http://webhook-server:3000/&lt;channelId&gt;"</span> \
+  --config url=<span class="string">"http://webhook-server:3000/&lt;channel&gt;"</span> \
   --config key=<span class="string">"$(cat private_key.pem)"</span> \
   --config forward=<span class="string">"http://api.example.com/webhook"</span></pre>
                         </div>

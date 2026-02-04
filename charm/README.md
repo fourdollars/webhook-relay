@@ -29,7 +29,7 @@ CHANNEL_ID=$(uuidgen | sha1sum | awk '{print $1}')
 juju deploy webhook-relay
 juju config webhook-relay mode=server
 juju config webhook-relay port=3000
-juju config webhook-relay channelId0="$CHANNEL_ID"
+juju config webhook-relay channel0="$CHANNEL_ID"
 juju config webhook-relay secret0="your-secret-key-for-channel-0"
 juju config webhook-relay key0="$(cat public_key_0.pem)"
 
@@ -61,7 +61,7 @@ juju config relay-client key="$(cat private_key.pem)"
 - `public-path`: Public path prefix for the application
 - `base-path`: Base path for webhook relay endpoints
 - `ping-interval-ms`: Ping interval in milliseconds (default: 7500)
-- `channelId0`-`channelId9`: Channel IDs (40-char hex SHA1) used as webhook URL paths (per channel)
+- `channel0`-`channel9`: Channel IDs (40-char hex SHA1) used as webhook URL paths (per channel)
 - `secret0`-`secret9`: Secret keys for signature validation (per channel)
 - `key0`-`key9`: RSA public keys for encryption (per channel, PEM format)
 
@@ -98,14 +98,14 @@ echo "my-unique-channel-name" | sha1sum | awk '{print $1}'
 ```bash
 # Channel 0 for GitHub webhooks
 GITHUB_CHANNEL=$(uuidgen | sha1sum | awk '{print $1}')
-juju config webhook-relay channelId0="$GITHUB_CHANNEL"
+juju config webhook-relay channel0="$GITHUB_CHANNEL"
 juju config webhook-relay secret0="github-webhook-secret"
 juju config webhook-relay key0="$(cat github_public_key.pem)"
 echo "GitHub webhook URL: http://your-server:3000/$GITHUB_CHANNEL"
 
 # Channel 1 for GitLab webhooks
 GITLAB_CHANNEL=$(uuidgen | sha1sum | awk '{print $1}')
-juju config webhook-relay channelId1="$GITLAB_CHANNEL"
+juju config webhook-relay channel1="$GITLAB_CHANNEL"
 juju config webhook-relay secret1="gitlab-webhook-token"
 juju config webhook-relay key1="$(cat gitlab_public_key.pem)"
 echo "GitLab webhook URL: http://your-server:3000/$GITLAB_CHANNEL"
@@ -116,10 +116,10 @@ echo "GitLab webhook URL: http://your-server:3000/$GITLAB_CHANNEL"
 Once configured, webhook providers should send POST requests to:
 
 ```
-http(s)://your-server:port/{channelId}
+http(s)://your-server:port/{channel}
 ```
 
-Where `{channelId}` is the 40-character hex string configured for that channel.
+Where `{channel}` is the 40-character hex string configured for that channel.
 
 ## Signature Validation
 
