@@ -234,3 +234,11 @@ config:
       type: string
       default: ""
       description: RSA private key PEM for decryption (client mode only)
+
+    store:
+      type: string
+      default: ""
+      description: |
+        Optional payload storage directory hint for client mode.
+        When set, the charm passes it to relayd as: --store <path>.
+        Must be an absolute path when set (e.g. /srv/payload_rw).

@@ -230,6 +230,19 @@ class WebhookRelayCharm(CharmBase):
             self.unit.status = BlockedStatus("relayd mode requires 'url' configuration")
             return False
 
+        # Validate optional client storage path
+        store_path = (self.config.get("store", "") or "").strip()
+        if store_path:
+            if not Path(store_path).is_absolute():
+                self.unit.status = BlockedStatus(
+                    "client mode 'store' must be an absolute path (e.g. /srv/payload_rw)"
+                )
+                return False
+
+            store_dir = Path(store_path)
+            store_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+            logger.info(f"Ensured client storage directory exists: {store_path}")
+
         # Write private key if provided
         key_value = self.config.get("key", "")
         if key_value:
@@ -303,6 +316,13 @@ WantedBy=multi-user.target
             cmd_args.append(forward_url)
             logger.info(f"Configured forwarding to: {forward_url}")
 
+        store_path = (self.config.get("store", "") or "").strip()
+        if store_path:
+            cmd_args.extend(["--store", store_path])
+            logger.info(f"Configured client storage path: {store_path}")
+
+        env_vars = ["RUST_LOG=info"]
+
         return f"""[Unit]
 Description=Webhook Relay Client (relayd)
 After=network.target
@@ -311,7 +331,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/var/lib/webhook-relay
-Environment="RUST_LOG=info"
+Environment={" ".join([f'"{e}"' for e in env_vars])}
 ExecStart={" ".join(cmd_args)}
 Restart=always
 RestartSec=10

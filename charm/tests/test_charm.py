@@ -89,9 +89,10 @@ class TestWebhookRelayCharm(unittest.TestCase):
         """Test configuration change to client mode."""
         self.harness.charm._stored.installed = True
 
-        # Mock Path for key file operations
-        mock_key_file = MagicMock()
-        mock_path_class.return_value = mock_key_file
+        # Mock Path for key file operations and store dir creation
+        mock_path_obj = MagicMock()
+        mock_path_obj.is_absolute.return_value = True
+        mock_path_class.return_value = mock_path_obj
 
         # Set configuration for client mode
         self.harness.update_config(
@@ -99,11 +100,33 @@ class TestWebhookRelayCharm(unittest.TestCase):
                 "mode": "client",
                 "url": "http://example.com/channel",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+                "store": "/srv/payload_rw",
             }
         )
 
         # Verify mode was stored
         self.assertEqual(self.harness.charm._stored.mode, "client")
+
+    @patch("charm.Path")
+    def test_config_changed_relayd_invalid_store_path(self, mock_path_class):
+        """Test client mode fails when store path is not absolute."""
+        self.harness.charm._stored.installed = True
+
+        mock_path_obj = MagicMock()
+        mock_path_obj.is_absolute.return_value = False
+        mock_path_class.return_value = mock_path_obj
+
+        self.harness.update_config(
+            {
+                "mode": "client",
+                "url": "http://example.com/channel",
+                "store": "relative/path",
+            }
+        )
+
+        from ops.model import BlockedStatus
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
 
     @patch("charm.subprocess.run")
     def test_config_changed_relayd_missing_url(self, mock_run):
@@ -183,6 +206,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
                 "mode": "client",
                 "url": "http://example.com/channel",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+                "store": "/srv/payload_rw",
             }
         )
 
@@ -192,6 +216,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.assertIn("http://example.com/channel", service_content)
         self.assertIn("ExecStart=", service_content)
         self.assertIn("/relayd", service_content)
+        self.assertIn("--store /srv/payload_rw", service_content)
 
     @patch("charm.Path.mkdir")
     def test_ensure_directories(self, mock_mkdir):
