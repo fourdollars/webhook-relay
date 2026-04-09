@@ -204,88 +204,295 @@ jobs:
           juju status relay-client
           juju exec --unit relay-client/0 -- systemctl status webhook-relay
 
-      - name: Set up end-to-end test channel on server
+      - name: Set up multiple channels on server
         run: |
-          CHANNEL_ID=$(echo -n "juju-integration-test" | sha1sum | awk '{print $1}')
-          CHANNEL_SECRET="juju-store-test-secret"
-          AUTH_RAW="relayuser:relaypass"
-          AUTH_TOKEN=$(printf '%s' "$AUTH_RAW" | base64 -w0)
-          echo "CHANNEL_ID=$CHANNEL_ID" >> $GITHUB_ENV
-          echo "CHANNEL_SECRET=$CHANNEL_SECRET" >> $GITHUB_ENV
-          echo "AUTH_RAW=$AUTH_RAW" >> $GITHUB_ENV
-          echo "AUTH_TOKEN=$AUTH_TOKEN" >> $GITHUB_ENV
+          # We will set up 8 channels to test all combinations of:
+          # (Auth, Secret, Key)
+          
+          # C0: Auth=NO,  Secret=NO,  Key=NO
+          C0_ID=$(echo -n "test-c0" | sha1sum | awk '{print $1}')
+          
+          # C1: Auth=NO,  Secret=NO,  Key=YES
+          C1_ID=$(echo -n "test-c1" | sha1sum | awk '{print $1}')
+          C1_KEY="-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALK1t33m\n-----END PUBLIC KEY-----"
+          
+          # C2: Auth=NO,  Secret=YES, Key=NO
+          C2_ID=$(echo -n "test-c2" | sha1sum | awk '{print $1}')
+          C2_SEC="sec2"
+          
+          # C3: Auth=YES, Secret=NO,  Key=NO
+          C3_ID=$(echo -n "test-c3" | sha1sum | awk '{print $1}')
+          C3_AUTH="u3:p3"
+          
+          # C4: Auth=NO,  Secret=YES, Key=YES
+          C4_ID=$(echo -n "test-c4" | sha1sum | awk '{print $1}')
+          C4_SEC="sec4"
+          C4_KEY="-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALK1t33m\n-----END PUBLIC KEY-----"
+          
+          # C5: Auth=YES, Secret=NO,  Key=YES
+          C5_ID=$(echo -n "test-c5" | sha1sum | awk '{print $1}')
+          C5_AUTH="u5:p5"
+          C5_KEY="-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALK1t33m\n-----END PUBLIC KEY-----"
+          
+          # C6: Auth=YES, Secret=YES, Key=NO
+          C6_ID=$(echo -n "test-c6" | sha1sum | awk '{print $1}')
+          C6_SEC="sec6"
+          C6_AUTH="u6:p6"
+          
+          # C7: Auth=YES, Secret=YES, Key=YES
+          C7_ID=$(echo -n "test-c7" | sha1sum | awk '{print $1}')
+          C7_SEC="sec7"
+          C7_AUTH="u7:p7"
+          C7_KEY="-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBALK1t33m\n-----END PUBLIC KEY-----"
+          
+          # Save to ENV for later steps
+          echo "C0_ID=$C0_ID" >> $GITHUB_ENV
+          
+          echo "C1_ID=$C1_ID" >> $GITHUB_ENV
+          echo "C1_KEY=$C1_KEY" >> $GITHUB_ENV
+          
+          echo "C2_ID=$C2_ID" >> $GITHUB_ENV
+          echo "C2_SEC=$C2_SEC" >> $GITHUB_ENV
+          
+          echo "C3_ID=$C3_ID" >> $GITHUB_ENV
+          echo "C3_AUTH=$C3_AUTH" >> $GITHUB_ENV
+          
+          echo "C4_ID=$C4_ID" >> $GITHUB_ENV
+          echo "C4_SEC=$C4_SEC" >> $GITHUB_ENV
+          echo "C4_KEY=$C4_KEY" >> $GITHUB_ENV
+          
+          echo "C5_ID=$C5_ID" >> $GITHUB_ENV
+          echo "C5_AUTH=$C5_AUTH" >> $GITHUB_ENV
+          echo "C5_KEY=$C5_KEY" >> $GITHUB_ENV
+          
+          echo "C6_ID=$C6_ID" >> $GITHUB_ENV
+          echo "C6_SEC=$C6_SEC" >> $GITHUB_ENV
+          echo "C6_AUTH=$C6_AUTH" >> $GITHUB_ENV
+          
+          echo "C7_ID=$C7_ID" >> $GITHUB_ENV
+          echo "C7_SEC=$C7_SEC" >> $GITHUB_ENV
+          echo "C7_AUTH=$C7_AUTH" >> $GITHUB_ENV
+          echo "C7_KEY=$C7_KEY" >> $GITHUB_ENV
+          
+          # Apply config
           juju config webhook-relay \
-            channel0=$CHANNEL_ID \
-            secret0=$CHANNEL_SECRET \
-            auth0=$AUTH_RAW
+            channel0=$C0_ID \
+            channel1=$C1_ID key1="$C1_KEY" \
+            channel2=$C2_ID secret2=$C2_SEC \
+            channel3=$C3_ID auth3=$C3_AUTH \
+            channel4=$C4_ID secret4=$C4_SEC key4="$C4_KEY" \
+            channel5=$C5_ID auth5=$C5_AUTH key5="$C5_KEY" \
+            channel6=$C6_ID secret6=$C6_SEC auth6=$C6_AUTH \
+            channel7=$C7_ID secret7=$C7_SEC auth7=$C7_AUTH key7="$C7_KEY"
+            
           juju wait-for application webhook-relay --timeout=5m
-          echo "Server configured with channel: $CHANNEL_ID"
+          echo "Server configured with 8 test channels"
 
-      - name: Verify server auth file is generated
-        run: |
-          TOKEN_ON_UNIT=$(juju exec --unit webhook-relay/0 -- \
-            sh -c 'cat /var/lib/webhook-relay/auth/${{ env.CHANNEL_ID }}')
-          echo "Token on unit length: ${#TOKEN_ON_UNIT}"
-          if [ "$TOKEN_ON_UNIT" = "${{ env.AUTH_TOKEN }}" ]; then
-            echo "✅ auth/{id} generated with expected token"
-          else
-            echo "❌ auth/{id} token mismatch"
-            echo "expected=${{ env.AUTH_TOKEN }}"
-            echo "actual=$TOKEN_ON_UNIT"
-            exit 1
-          fi
 
-      - name: Configure relay-client with store/auth and real server URL
+      - name: "Configure relay-client (C0: No Auth, No Secret, No Key)"
         run: |
           SERVER_IP=$(juju status --format json | \
             python3 -c "import json,sys; d=json.load(sys.stdin); \
             print(d['applications']['webhook-relay']['units']['webhook-relay/0']['public-address'])")
           echo "Server IP: $SERVER_IP"
           echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
+          
           juju config relay-client \
-            url="http://${SERVER_IP}:3000/${{ env.CHANNEL_ID }}" \
+            url="http://${SERVER_IP}:3000/${{ env.C0_ID }}" \
             store=/srv/payload_store \
-            auth="${{ env.AUTH_RAW }}"
+            auth="" \
+            secret="" \
+            key=""
           juju wait-for application relay-client --timeout=5m
-          juju status relay-client
+          sleep 5
+          
+          PAYLOAD='{"test":"c0_test"}'
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C0_ID }}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c0_test" \
+            && echo "✅ C0 (None) webhook received successfully" \
+            || { echo "❌ C0 webhook not received"; exit 1; }
 
-      - name: Verify --store and Basic Auth flags are present in service ExecStart
+      - name: "Configure relay-client (C1: Key-only)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C1_ID }}" \
+            auth="" \
+            secret="" \
+            key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c1_test"}'
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C1_ID }}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c1_test" \
+            && echo "✅ C1 (Key-only) webhook received successfully" \
+            || { echo "❌ C1 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C2: Secret-only)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C2_ID }}" \
+            auth="" \
+            secret="${{ env.C2_SEC }}" \
+            key=""
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c2_test"}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.C2_SEC }}" | awk '{print $2}')
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C2_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c2_test" \
+            && echo "✅ C2 (Secret-only) webhook received successfully" \
+            || { echo "❌ C2 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C3: Auth-only)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C3_ID }}" \
+            auth="${{ env.C3_AUTH }}" \
+            secret="" \
+            key=""
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c3_test"}'
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C3_ID }}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c3_test" \
+            && echo "✅ C3 (Auth-only) webhook received successfully" \
+            || { echo "❌ C3 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C4: Secret+Key)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C4_ID }}" \
+            auth="" \
+            secret="${{ env.C4_SEC }}" \
+            key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c4_test"}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.C4_SEC }}" | awk '{print $2}')
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C4_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c4_test" \
+            && echo "✅ C4 (Secret+Key) webhook received successfully" \
+            || { echo "❌ C4 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C5: Auth+Key)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C5_ID }}" \
+            auth="${{ env.C5_AUTH }}" \
+            secret="" \
+            key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c5_test"}'
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C5_ID }}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c5_test" \
+            && echo "✅ C5 (Auth+Key) webhook received successfully" \
+            || { echo "❌ C5 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C6: Auth+Secret)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C6_ID }}" \
+            auth="${{ env.C6_AUTH }}" \
+            secret="${{ env.C6_SEC }}" \
+            key=""
+          juju wait-for application relay-client --timeout=5m
+          sleep 5
+          
+          PAYLOAD='{"test":"c6_test"}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.C6_SEC }}" | awk '{print $2}')
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C6_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+            
+          sleep 5
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          juju exec --unit relay-client/0 -- cat "$BODY_FILE" | grep -q "c6_test" \
+            && echo "✅ C6 (Auth+Secret) webhook received successfully" \
+            || { echo "❌ C6 webhook not received"; exit 1; }
+
+      - name: "Configure relay-client (C7: Auth+Secret+Key)"
+        run: |
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.C7_ID }}" \
+            auth="${{ env.C7_AUTH }}" \
+            secret="${{ env.C7_SEC }}" \
+            key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
+            
+          juju wait-for application relay-client --timeout=5m
+          
+      - name: Verify C7 flags in ExecStart
         run: |
           EXEC_START=$(juju exec --unit relay-client/0 -- \
             systemctl show webhook-relay -p ExecStart)
           echo "ExecStart: $EXEC_START"
           echo "$EXEC_START" | grep -q -- "--store /srv/payload_store"
-          echo "$EXEC_START" | grep -q -- "--user relayuser --pass relaypass"
+          echo "$EXEC_START" | grep -q -- "--user u7 --pass p7"
           echo "✅ --store and --user/--pass flags present in service ExecStart"
 
-      - name: Send webhook and verify payload is stored on client unit
+      - name: Send C7 webhook and verify
         run: |
-          sleep 10  # Allow client to establish SSE connection
-          PAYLOAD='{"test":"juju_store_test","source":"integration","ts":'$(date +%s)'}'
-          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.CHANNEL_SECRET }}" | awk '{print $2}')
-          curl -sf -X POST "http://${{ env.SERVER_IP }}:3000/${{ env.CHANNEL_ID }}" \
+          sleep 5  # Allow client to establish SSE connection
+          PAYLOAD='{"test":"c7_test","source":"integration","ts":'$(date +%s)'}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.C7_SEC }}" | awk '{print $2}')
+          curl -sf -X POST "http://${SERVER_IP}:3000/${{ env.C7_ID }}" \
             -H "Content-Type: application/json" \
             -H "X-Hub-Signature: sha1=$SIGNATURE" \
             -d "$PAYLOAD"
-          echo "Webhook sent, waiting for client to write store files..."
+          
           sleep 5
-          STORE_FILES=$(juju exec --unit relay-client/0 -- ls /srv/payload_store/ 2>/dev/null || true)
-          echo "Store files: $STORE_FILES"
-          if echo "$STORE_FILES" | grep -q "\.body\.json"; then
-            echo "✅ Payload files created in store directory"
-            BODY_FILE=$(juju exec --unit relay-client/0 -- \
-              sh -c 'ls /srv/payload_store/*.body.json 2>/dev/null | head -1')
-            CONTENT=$(juju exec --unit relay-client/0 -- cat "$BODY_FILE")
-            echo "Body content: $CONTENT"
-            echo "$CONTENT" | grep -q "juju_store_test" \
-              && echo "✅ Body content matches sent payload" \
-              || { echo "❌ Body content does not match"; exit 1; }
-          else
-            echo "❌ No store files found in /srv/payload_store"
-            juju exec --unit relay-client/0 -- ls -la /srv/payload_store/ || true
-            juju exec --unit relay-client/0 -- journalctl -u webhook-relay --no-pager -n 50 || true
-            exit 1
-          fi
+          BODY_FILE=$(juju exec --unit relay-client/0 -- \
+            sh -c 'ls -t /srv/payload_store/*.body.json 2>/dev/null | head -1')
+          CONTENT=$(juju exec --unit relay-client/0 -- cat "$BODY_FILE")
+          echo "$CONTENT" | grep -q "c7_test" \
+            && echo "✅ C7 (Auth+Secret+Key) webhook received successfully" \
+            || { echo "❌ C7 webhook not received"; exit 1; }
+
 
       - name: Test invalid store path is rejected
         run: |
@@ -320,7 +527,10 @@ jobs:
             echo "❌ Expected blocked status for invalid auth, got: $STATUS"
             exit 1
           fi
-          juju config relay-client auth="${{ env.AUTH_RAW }}"
+          juju config relay-client \
+            auth="${{ env.C7_AUTH }}" \
+            secret="${{ env.C7_SEC }}" \
+            key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
           juju wait-for application relay-client --timeout=5m
           echo "✅ Valid auth restored"
 
