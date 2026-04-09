@@ -301,7 +301,6 @@ jobs:
             url="http://${SERVER_IP}:3000/${{ env.C0_ID }}" \
             store=/srv/payload_store \
             auth="" \
-            secret="" \
             key=""
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -323,7 +322,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C1_ID }}" \
             auth="" \
-            secret="" \
             key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -345,7 +343,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C2_ID }}" \
             auth="" \
-            secret="${{ env.C2_SEC }}" \
             key=""
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -369,7 +366,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C3_ID }}" \
             auth="${{ env.C3_AUTH }}" \
-            secret="" \
             key=""
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -391,7 +387,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C4_ID }}" \
             auth="" \
-            secret="${{ env.C4_SEC }}" \
             key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -415,7 +410,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C5_ID }}" \
             auth="${{ env.C5_AUTH }}" \
-            secret="" \
             key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -437,7 +431,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C6_ID }}" \
             auth="${{ env.C6_AUTH }}" \
-            secret="${{ env.C6_SEC }}" \
             key=""
           juju wait-for application relay-client --timeout=5m
           sleep 5
@@ -461,7 +454,6 @@ jobs:
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.C7_ID }}" \
             auth="${{ env.C7_AUTH }}" \
-            secret="${{ env.C7_SEC }}" \
             key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
             
           juju wait-for application relay-client --timeout=5m
@@ -529,7 +521,6 @@ jobs:
           fi
           juju config relay-client \
             auth="${{ env.C7_AUTH }}" \
-            secret="${{ env.C7_SEC }}" \
             key="-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8AgEAAkEAoR7M\n-----END PRIVATE KEY-----"
           juju wait-for application relay-client --timeout=5m
           echo "✅ Valid auth restored"
