@@ -315,6 +315,48 @@ jobs:
             exit 1
           fi
       
+      - name: Test --store flag (payload persistence)
+        run: |
+          # Stop the forwarding relayd and start a new one with --store
+          [ -f /tmp/relayd.pid ] && kill $(cat /tmp/relayd.pid) 2>/dev/null || true
+          sleep 1
+
+          mkdir -p /tmp/webhook-store
+          RUST_LOG=info $GITHUB_WORKSPACE/target/release/relayd \
+            "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
+            /dev/null \
+            --store /tmp/webhook-store > /tmp/relayd-store.log 2>&1 &
+          echo $! > /tmp/relayd.pid
+          sleep 3
+          echo "Relayd started with --store /tmp/webhook-store"
+
+          # Send a webhook payload
+          PAYLOAD='{"test":"store_webhook","message":"Testing store flag","timestamp":'$(date +%s)'}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "test-secret-123" | awk '{print $2}')
+
+          curl -X POST "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+
+          sleep 2
+
+          # Verify header and body JSON files were created
+          HEADER_FILE=$(ls /tmp/webhook-store/*.header.json 2>/dev/null | head -1)
+          BODY_FILE=$(ls /tmp/webhook-store/*.body.json 2>/dev/null | head -1)
+
+          if [ -n "$HEADER_FILE" ] && [ -n "$BODY_FILE" ]; then
+            echo "✅ Store files created:"
+            echo "   Header: $HEADER_FILE"
+            echo "   Body:   $BODY_FILE"
+            grep -q "store_webhook" "$BODY_FILE" && echo "✅ Body file contains expected payload" || { echo "❌ Body file missing expected payload"; exit 1; }
+          else
+            echo "❌ No store files found in /tmp/webhook-store"
+            ls -la /tmp/webhook-store/ || true
+            cat /tmp/relayd-store.log || true
+            exit 1
+          fi
+
       - name: Test ping event filtering
         run: |
           # Get initial receiver log size
@@ -348,6 +390,9 @@ jobs:
           echo ""
           echo "=== Relayd Log ==="
           cat /tmp/relayd.log || echo "No relayd log"
+          echo ""
+          echo "=== Relayd Store Log ==="
+          cat /tmp/relayd-store.log || echo "No relayd-store log"
           echo ""
           echo "=== Receiver Log ==="
           cat /tmp/receiver.log || echo "No receiver log"
