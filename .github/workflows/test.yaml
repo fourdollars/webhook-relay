@@ -203,7 +203,86 @@ jobs:
         run: |
           juju status relay-client
           juju exec --unit relay-client/0 -- systemctl status webhook-relay
-      
+
+      - name: Set up end-to-end test channel on server
+        run: |
+          CHANNEL_ID=$(echo -n "juju-integration-test" | sha1sum | awk '{print $1}')
+          CHANNEL_SECRET="juju-store-test-secret"
+          echo "CHANNEL_ID=$CHANNEL_ID" >> $GITHUB_ENV
+          echo "CHANNEL_SECRET=$CHANNEL_SECRET" >> $GITHUB_ENV
+          juju config webhook-relay channel0=$CHANNEL_ID secret0=$CHANNEL_SECRET
+          juju wait-for application webhook-relay --timeout=5m
+          echo "Server configured with channel: $CHANNEL_ID"
+
+      - name: Configure relay-client with store and real server URL
+        run: |
+          SERVER_IP=$(juju status --format json | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); \
+            print(d['applications']['webhook-relay']['units']['webhook-relay/0']['public-address'])")
+          echo "Server IP: $SERVER_IP"
+          echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
+          juju config relay-client \
+            url="http://${SERVER_IP}:3000/${{ env.CHANNEL_ID }}" \
+            store=/srv/payload_store
+          juju wait-for application relay-client --timeout=5m
+          juju status relay-client
+
+      - name: Verify --store flag is present in service ExecStart
+        run: |
+          EXEC_START=$(juju exec --unit relay-client/0 -- \
+            systemctl show webhook-relay -p ExecStart)
+          echo "ExecStart: $EXEC_START"
+          echo "$EXEC_START" | grep -q -- "--store /srv/payload_store"
+          echo "✅ --store flag present in service ExecStart"
+
+      - name: Send webhook and verify payload is stored on client unit
+        run: |
+          sleep 10  # Allow client to establish SSE connection
+          PAYLOAD='{"test":"juju_store_test","source":"integration","ts":'$(date +%s)'}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha1 -hmac "${{ env.CHANNEL_SECRET }}" | awk '{print $2}')
+          curl -sf -X POST "http://${{ env.SERVER_IP }}:3000/${{ env.CHANNEL_ID }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature: sha1=$SIGNATURE" \
+            -d "$PAYLOAD"
+          echo "Webhook sent, waiting for client to write store files..."
+          sleep 5
+          STORE_FILES=$(juju exec --unit relay-client/0 -- ls /srv/payload_store/ 2>/dev/null || true)
+          echo "Store files: $STORE_FILES"
+          if echo "$STORE_FILES" | grep -q "\.body\.json"; then
+            echo "✅ Payload files created in store directory"
+            BODY_FILE=$(juju exec --unit relay-client/0 -- \
+              sh -c 'ls /srv/payload_store/*.body.json 2>/dev/null | head -1')
+            CONTENT=$(juju exec --unit relay-client/0 -- cat "$BODY_FILE")
+            echo "Body content: $CONTENT"
+            echo "$CONTENT" | grep -q "juju_store_test" \
+              && echo "✅ Body content matches sent payload" \
+              || { echo "❌ Body content does not match"; exit 1; }
+          else
+            echo "❌ No store files found in /srv/payload_store"
+            juju exec --unit relay-client/0 -- ls -la /srv/payload_store/ || true
+            juju exec --unit relay-client/0 -- journalctl -u webhook-relay --no-pager -n 50 || true
+            exit 1
+          fi
+
+      - name: Test invalid store path is rejected
+        run: |
+          juju config relay-client store=relative/path
+          sleep 10  # Allow config-changed to process
+          STATUS=$(juju status --format json | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); \
+            print(d['applications']['relay-client']['units']['relay-client/0']['workload-status']['current'])")
+          echo "Status after invalid store path: $STATUS"
+          if [ "$STATUS" = "blocked" ]; then
+            echo "✅ Invalid store path correctly causes blocked status"
+          else
+            echo "❌ Expected blocked status, got: $STATUS"
+            exit 1
+          fi
+          # Restore valid configuration
+          juju config relay-client store=/srv/payload_store
+          juju wait-for application relay-client --timeout=5m
+          echo "✅ Valid store path restored"
+
       - name: Show logs on failure
         if: failure()
         run: |
