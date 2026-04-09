@@ -247,6 +247,45 @@ fn list_channels_page(public_path: &str, channels: GlobalChannels) -> String {
     content
 }
 
+fn unauthorized_basic_response(realm: &str) -> HttpResponse {
+    let mut response = HttpResponse::Unauthorized().finish();
+    response.headers_mut().insert(
+        actix_web::http::header::WWW_AUTHENTICATE,
+        actix_web::http::header::HeaderValue::from_str(&format!("Basic realm=\"{}\"", realm))
+            .unwrap_or_else(|_| {
+                actix_web::http::header::HeaderValue::from_static("Basic realm=\"401\"")
+            }),
+    );
+    response
+}
+
+fn read_channel_auth_token(id: &str) -> Result<Option<String>, std::io::Error> {
+    let auth_path = format!("auth/{}", id);
+    match std::fs::read_to_string(&auth_path) {
+        Ok(raw) => {
+            let token = raw.trim().to_string();
+            if token.is_empty() {
+                warn!("auth file is empty for channel '{}': {}", id, auth_path);
+                Ok(None)
+            } else {
+                Ok(Some(token))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn extract_basic_token(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Basic "))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
+
 struct AppState {
     channels: GlobalChannels,
     pass: String,
@@ -264,12 +303,7 @@ async fn admin(req: HttpRequest, data: web::Data<AppState>) -> HttpResponse {
     let auth = req.headers().get("Authorization");
 
     if auth.is_none() {
-        let mut response = HttpResponse::Unauthorized().finish();
-        response.headers_mut().insert(
-            actix_web::http::header::WWW_AUTHENTICATE,
-            actix_web::http::header::HeaderValue::from_static("Basic realm=\"401\""),
-        );
-        return response;
+        return unauthorized_basic_response("401");
     }
 
     if let Some(auth) = auth {
@@ -296,10 +330,34 @@ async fn favicon() -> impl Responder {
 }
 
 #[get("/{id}")]
-async fn relay_get(id: web::Path<String>, data: web::Data<AppState>) -> HttpResponse {
+async fn relay_get(
+    req: HttpRequest,
+    id: web::Path<String>,
+    data: web::Data<AppState>,
+) -> HttpResponse {
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return HttpResponse::BadRequest().body("Invalid channel ID");
     }
+
+    let channel_id = id.into_inner();
+    match read_channel_auth_token(&channel_id) {
+        Ok(Some(expected_token)) => {
+            let got_token = extract_basic_token(&req);
+            if got_token.as_deref() != Some(expected_token.as_str()) {
+                warn!("Unauthorized SSE subscribe for channel '{}'", channel_id);
+                return unauthorized_basic_response("sse");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            error!(
+                "Failed to read auth token for channel '{}': {}",
+                channel_id, e
+            );
+            return HttpResponse::InternalServerError().body("Failed to load channel auth");
+        }
+    }
+
     let mut res_builder = HttpResponse::Ok();
     res_builder
         .insert_header(("Content-Type", "text/event-stream"))
@@ -307,7 +365,7 @@ async fn relay_get(id: web::Path<String>, data: web::Data<AppState>) -> HttpResp
         .insert_header(("Connection", "keep-alive"));
 
     res_builder.body(BodyStream::new(get_or_create_stream_channel_stream(
-        id.into_inner(),
+        channel_id,
         data.channels.clone(),
     )))
 }
@@ -616,6 +674,7 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes_gcm::{Key, Nonce};
     use pkcs8::DecodePrivateKey;
     use rsa::RsaPrivateKey;
 
@@ -795,5 +854,41 @@ mod tests {
             "X-Line-Signature validation failed: calculated '{}', expected '{}'",
             calculated_signature, expected_signature
         );
+    }
+
+    #[test]
+    fn test_read_channel_auth_token() {
+        let channel_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let unique = format!(
+            "webhook-relay-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let temp_root = std::env::temp_dir().join(unique);
+        let auth_dir = temp_root.join("auth");
+        std::fs::create_dir_all(&auth_dir).unwrap();
+        std::fs::write(auth_dir.join(channel_id), "dXNlcjpwYXNz\n").unwrap();
+
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&temp_root).unwrap();
+        let token = read_channel_auth_token(channel_id).unwrap();
+        std::env::set_current_dir(old_cwd).unwrap();
+
+        assert_eq!(token, Some("dXNlcjpwYXNz".to_string()));
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[test]
+    fn test_extract_basic_token_from_request() {
+        use actix_web::test::TestRequest;
+
+        let req = TestRequest::default()
+            .insert_header(("Authorization", "Basic dXNlcjpwYXNz"))
+            .to_http_request();
+
+        let token = extract_basic_token(&req);
+        assert_eq!(token, Some("dXNlcjpwYXNz".to_string()));
     }
 }
