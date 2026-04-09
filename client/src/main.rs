@@ -141,10 +141,7 @@ fn decrypt_asymmetric(
     Ok(decrypted)
 }
 
-async fn persist_payload(
-    payload: &Payload,
-    store_path: &PathBuf,
-) -> Result<(), AppError> {
+async fn persist_payload(payload: &Payload, store_path: &PathBuf) -> Result<(), AppError> {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::AsyncWriteExt;
 
@@ -156,28 +153,34 @@ async fn persist_payload(
 
     // Write headers atomically: write to .tmp, then rename
     let header_final = store_path.join(format!("{}.header.json", ts_ns));
-    let header_tmp   = store_path.join(format!("{}.header.json.tmp", ts_ns));
+    let header_tmp = store_path.join(format!("{}.header.json.tmp", ts_ns));
     {
-        let mut f = tokio::fs::File::create(&header_tmp).await
+        let mut f = tokio::fs::File::create(&header_tmp)
+            .await
             .map_err(|e| AppError::Io(e))?;
-        f.write_all(payload.headers.as_bytes()).await
+        f.write_all(payload.headers.as_bytes())
+            .await
             .map_err(|e| AppError::Io(e))?;
         f.flush().await.map_err(|e| AppError::Io(e))?;
     }
-    tokio::fs::rename(&header_tmp, &header_final).await
+    tokio::fs::rename(&header_tmp, &header_final)
+        .await
         .map_err(|e| AppError::Io(e))?;
 
     // Write body atomically: write to .tmp, then rename
     let body_final = store_path.join(format!("{}.body.json", ts_ns));
-    let body_tmp   = store_path.join(format!("{}.body.json.tmp", ts_ns));
+    let body_tmp = store_path.join(format!("{}.body.json.tmp", ts_ns));
     {
-        let mut f = tokio::fs::File::create(&body_tmp).await
+        let mut f = tokio::fs::File::create(&body_tmp)
+            .await
             .map_err(|e| AppError::Io(e))?;
-        f.write_all(payload.body.as_bytes()).await
+        f.write_all(payload.body.as_bytes())
+            .await
             .map_err(|e| AppError::Io(e))?;
         f.flush().await.map_err(|e| AppError::Io(e))?;
     }
-    tokio::fs::rename(&body_tmp, &body_final).await
+    tokio::fs::rename(&body_tmp, &body_final)
+        .await
         .map_err(|e| AppError::Io(e))?;
 
     log::info!(
@@ -286,32 +289,51 @@ async fn main() -> Result<(), AppError> {
 
     let raw_args: Vec<String> = env::args().collect();
 
-    // Parse --store <path> flag from args
+    // Parse optional flags first
     let mut store_path: Option<PathBuf> = None;
+    let mut basic_auth_user: Option<String> = None;
+    let mut basic_auth_pass: Option<String> = None;
     let mut remaining_args: Vec<String> = Vec::new();
-    let mut iter = raw_args.into_iter().peekable();
+    let mut iter = raw_args.into_iter();
     let program = iter.next().unwrap_or_default();
+
     while let Some(arg) = iter.next() {
-        if arg == "--store" {
-            match iter.next() {
+        match arg.as_str() {
+            "--store" => match iter.next() {
                 Some(p) => store_path = Some(PathBuf::from(p)),
                 None => {
                     eprintln!("Error: --store requires a path argument");
                     process::exit(2);
                 }
-            }
-        } else {
-            remaining_args.push(arg);
+            },
+            "--user" => match iter.next() {
+                Some(user) => basic_auth_user = Some(user),
+                None => {
+                    eprintln!("Error: --user requires a username argument");
+                    process::exit(2);
+                }
+            },
+            "--pass" => match iter.next() {
+                Some(pass) => basic_auth_pass = Some(pass),
+                None => {
+                    eprintln!("Error: --pass requires a password argument");
+                    process::exit(2);
+                }
+            },
+            _ => remaining_args.push(arg),
         }
     }
-    let args = std::iter::once(program).chain(remaining_args.into_iter()).collect::<Vec<_>>();
+
+    let args = std::iter::once(program)
+        .chain(remaining_args.into_iter())
+        .collect::<Vec<_>>();
 
     if args.len() < 3 || args.len() > 4 {
         eprintln!("Webhook Relay Client");
         eprintln!();
         eprintln!("USAGE:");
         eprintln!(
-            "    {} <url> <private_key_path> [forward_post_url] [--store <dir>]",
+            "    {} <url> <private_key_path> [forward_post_url] [--store <dir>] [--user <user> --pass <pass>]",
             args[0]
         );
         eprintln!();
@@ -323,6 +345,8 @@ async fn main() -> Result<(), AppError> {
         eprintln!("OPTIONS:");
         eprintln!("    --store <dir>      Optional directory to persist payloads as");
         eprintln!("                       {{TIMESTAMP}}.header.json and {{TIMESTAMP}}.body.json");
+        eprintln!("    --user <user>      Optional Basic Auth username for SSE requests");
+        eprintln!("    --pass <pass>      Optional Basic Auth password for SSE requests");
         eprintln!();
         eprintln!("BEHAVIOR:");
         eprintln!("    The client connects to the SSE endpoint and monitors for webhook events.");
@@ -370,6 +394,18 @@ async fn main() -> Result<(), AppError> {
         log::info!("Store path: {}", store.display());
     }
 
+    let basic_auth = match (&basic_auth_user, &basic_auth_pass) {
+        (Some(user), Some(pass)) => {
+            log::info!("SSE Basic Auth enabled for user '{}'", user);
+            Some((user.clone(), pass.clone()))
+        }
+        (None, None) => None,
+        _ => {
+            eprintln!("Error: --user and --pass must be provided together");
+            process::exit(2);
+        }
+    };
+
     let url = &args[1];
     let private_key_path = PathBuf::from(&args[2]);
     let forward_post_url = if args.len() == 4 {
@@ -389,6 +425,7 @@ async fn main() -> Result<(), AppError> {
         &private_key_path,
         forward_post_url,
         store_path,
+        basic_auth,
         config,
         connection_state,
     )
@@ -418,6 +455,7 @@ async fn run_client_with_reconnection(
     private_key_path: &PathBuf,
     forward_post_url: Option<String>,
     store_path: Option<PathBuf>,
+    basic_auth: Option<(String, String)>,
     config: HeartbeatConfig,
     connection_state: Arc<Mutex<ConnectionState>>,
 ) -> Result<(), AppError> {
@@ -427,13 +465,20 @@ async fn run_client_with_reconnection(
     loop {
         log::info!("Attempting to connect to {}", url);
 
-        let client = es::ClientBuilder::for_url(url)
+        let mut builder = es::ClientBuilder::for_url(url)
             .map_err(|e| AppError::ConnectionFailed(format!("Failed to create client: {}", e)))?
             .reconnect(
                 es::ReconnectOptions::reconnect(false) // We handle reconnection ourselves
                     .build(),
-            )
-            .build();
+            );
+
+        if let Some((user, pass)) = &basic_auth {
+            builder = builder.basic_auth(user, pass).map_err(|e| {
+                AppError::ConnectionFailed(format!("Failed to set basic auth header: {}", e))
+            })?;
+        }
+
+        let client = builder.build();
 
         // Reset connection state for new attempt
         {
@@ -577,9 +622,13 @@ async fn run_client_session(
                                 };
                                 if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
                                     let sp = store_path.as_ref().map(|a| a.as_ref());
-                                    if let Err(e) =
-                                        handle_payload(&payload, &forward_post_url, &sp.map(|p: &PathBuf| p.clone()), &http_client)
-                                            .await
+                                    if let Err(e) = handle_payload(
+                                        &payload,
+                                        &forward_post_url,
+                                        &sp.map(|p: &PathBuf| p.clone()),
+                                        &http_client,
+                                    )
+                                    .await
                                     {
                                         eprintln!("Failed to handle webhook payload: {}", e);
                                     }
@@ -729,8 +778,12 @@ mod tests {
             body: r#"{"ref":"refs/heads/main"}"#.to_string(),
         };
 
-        persist_payload(&payload, &dir.path().to_path_buf()).await.unwrap();
-        persist_payload(&payload, &dir.path().to_path_buf()).await.unwrap();
+        persist_payload(&payload, &dir.path().to_path_buf())
+            .await
+            .unwrap();
+        persist_payload(&payload, &dir.path().to_path_buf())
+            .await
+            .unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
