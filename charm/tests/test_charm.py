@@ -223,7 +223,9 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.assertIn("--user alice --pass secret", service_content)
 
     @patch("charm.Path")
-    def test_config_changed_server_auth_without_channel_is_blocked(self, mock_path_class):
+    def test_config_changed_server_auth_without_channel_is_blocked(
+        self, mock_path_class
+    ):
         """Test server mode blocks authN when channelN is missing."""
         self.harness.charm._stored.installed = True
 

@@ -265,9 +265,9 @@ class WebhookRelayCharm(CharmBase):
                     return False
 
                 user, password = parsed
-                token = base64.b64encode(
-                    f"{user}:{password}".encode("utf-8")
-                ).decode("utf-8")
+                token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode(
+                    "utf-8"
+                )
 
                 auth_file = Path("/var/lib/webhook-relay/auth") / channel_id
                 auth_file.write_text(token)
