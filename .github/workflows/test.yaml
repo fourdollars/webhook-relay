@@ -208,13 +208,34 @@ jobs:
         run: |
           CHANNEL_ID=$(echo -n "juju-integration-test" | sha1sum | awk '{print $1}')
           CHANNEL_SECRET="juju-store-test-secret"
+          AUTH_RAW="relayuser:relaypass"
+          AUTH_TOKEN=$(printf '%s' "$AUTH_RAW" | base64 -w0)
           echo "CHANNEL_ID=$CHANNEL_ID" >> $GITHUB_ENV
           echo "CHANNEL_SECRET=$CHANNEL_SECRET" >> $GITHUB_ENV
-          juju config webhook-relay channel0=$CHANNEL_ID secret0=$CHANNEL_SECRET
+          echo "AUTH_RAW=$AUTH_RAW" >> $GITHUB_ENV
+          echo "AUTH_TOKEN=$AUTH_TOKEN" >> $GITHUB_ENV
+          juju config webhook-relay \
+            channel0=$CHANNEL_ID \
+            secret0=$CHANNEL_SECRET \
+            auth0=$AUTH_RAW
           juju wait-for application webhook-relay --timeout=5m
           echo "Server configured with channel: $CHANNEL_ID"
 
-      - name: Configure relay-client with store and real server URL
+      - name: Verify server auth file is generated
+        run: |
+          TOKEN_ON_UNIT=$(juju exec --unit webhook-relay/0 -- \
+            sh -c 'cat /var/lib/webhook-relay/auth/${{ env.CHANNEL_ID }}')
+          echo "Token on unit length: ${#TOKEN_ON_UNIT}"
+          if [ "$TOKEN_ON_UNIT" = "${{ env.AUTH_TOKEN }}" ]; then
+            echo "✅ auth/{id} generated with expected token"
+          else
+            echo "❌ auth/{id} token mismatch"
+            echo "expected=${{ env.AUTH_TOKEN }}"
+            echo "actual=$TOKEN_ON_UNIT"
+            exit 1
+          fi
+
+      - name: Configure relay-client with store/auth and real server URL
         run: |
           SERVER_IP=$(juju status --format json | \
             python3 -c "import json,sys; d=json.load(sys.stdin); \
@@ -223,17 +244,19 @@ jobs:
           echo "SERVER_IP=$SERVER_IP" >> $GITHUB_ENV
           juju config relay-client \
             url="http://${SERVER_IP}:3000/${{ env.CHANNEL_ID }}" \
-            store=/srv/payload_store
+            store=/srv/payload_store \
+            auth="${{ env.AUTH_RAW }}"
           juju wait-for application relay-client --timeout=5m
           juju status relay-client
 
-      - name: Verify --store flag is present in service ExecStart
+      - name: Verify --store and Basic Auth flags are present in service ExecStart
         run: |
           EXEC_START=$(juju exec --unit relay-client/0 -- \
             systemctl show webhook-relay -p ExecStart)
           echo "ExecStart: $EXEC_START"
           echo "$EXEC_START" | grep -q -- "--store /srv/payload_store"
-          echo "✅ --store flag present in service ExecStart"
+          echo "$EXEC_START" | grep -q -- "--user relayuser --pass relaypass"
+          echo "✅ --store and --user/--pass flags present in service ExecStart"
 
       - name: Send webhook and verify payload is stored on client unit
         run: |
@@ -283,6 +306,24 @@ jobs:
           juju wait-for application relay-client --timeout=5m
           echo "✅ Valid store path restored"
 
+      - name: Test invalid client auth format is rejected
+        run: |
+          juju config relay-client auth=invalid-format
+          sleep 10
+          STATUS=$(juju status --format json | \
+            python3 -c "import json,sys; d=json.load(sys.stdin); \
+            print(d['applications']['relay-client']['units']['relay-client/0']['workload-status']['current'])")
+          echo "Status after invalid auth format: $STATUS"
+          if [ "$STATUS" = "blocked" ]; then
+            echo "✅ Invalid auth format correctly causes blocked status"
+          else
+            echo "❌ Expected blocked status for invalid auth, got: $STATUS"
+            exit 1
+          fi
+          juju config relay-client auth="${{ env.AUTH_RAW }}"
+          juju wait-for application relay-client --timeout=5m
+          echo "✅ Valid auth restored"
+
       - name: Show logs on failure
         if: failure()
         run: |
@@ -310,10 +351,16 @@ jobs:
       
       - name: Setup test environment
         run: |
-          mkdir -p /tmp/webhook-test/secret
+          mkdir -p /tmp/webhook-test/secret /tmp/webhook-test/auth
           CHANNEL_ID=$(echo -n "test-channel" | sha1sum | awk '{print $1}')
+          AUTH_USER="funcuser"
+          AUTH_PASS="funcpass"
+          AUTH_TOKEN=$(printf '%s' "${AUTH_USER}:${AUTH_PASS}" | base64 -w0)
           echo -n "test-secret-123" > /tmp/webhook-test/secret/$CHANNEL_ID
+          echo -n "$AUTH_TOKEN" > /tmp/webhook-test/auth/$CHANNEL_ID
           echo "CHANNEL_ID=$CHANNEL_ID" >> $GITHUB_ENV
+          echo "AUTH_USER=$AUTH_USER" >> $GITHUB_ENV
+          echo "AUTH_PASS=$AUTH_PASS" >> $GITHUB_ENV
           echo "Test environment ready with channel: $CHANNEL_ID"
       
       - name: Start webhook server
@@ -354,15 +401,17 @@ jobs:
           sleep 2
           echo "HTTP receiver started"
       
-      - name: Start relayd with forwarding
+      - name: Start relayd with forwarding and Basic Auth
         run: |
           RUST_LOG=info $GITHUB_WORKSPACE/target/release/relayd \
             "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
             /dev/null \
-            http://127.0.0.1:8888/webhook > /tmp/relayd.log 2>&1 &
+            http://127.0.0.1:8888/webhook \
+            --user "${{ env.AUTH_USER }}" \
+            --pass "${{ env.AUTH_PASS }}" > /tmp/relayd.log 2>&1 &
           echo $! > /tmp/relayd.pid
           sleep 3
-          echo "Relayd started with forwarding"
+          echo "Relayd started with forwarding + Basic Auth"
       
       - name: Test webhook forwarding
         run: |
@@ -404,7 +453,9 @@ jobs:
           RUST_LOG=info $GITHUB_WORKSPACE/target/release/relayd \
             "http://127.0.0.1:3000/${{ env.CHANNEL_ID }}" \
             /dev/null \
-            --store /tmp/webhook-store > /tmp/relayd-store.log 2>&1 &
+            --store /tmp/webhook-store \
+            --user "${{ env.AUTH_USER }}" \
+            --pass "${{ env.AUTH_PASS }}" > /tmp/relayd-store.log 2>&1 &
           echo $! > /tmp/relayd.pid
           sleep 3
           echo "Relayd started with --store /tmp/webhook-store"
