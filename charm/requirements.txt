@@ -2,6 +2,6 @@ ops>=2.0
 opentelemetry-api
 pyyaml
 websocket-client
-importlib-metadata
+importlib-metadata<8.8.0
 typing-extensions
 zipp
