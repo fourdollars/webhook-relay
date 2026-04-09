@@ -65,9 +65,10 @@ class TestWebhookRelayCharm(unittest.TestCase):
         """Test configuration change to server mode."""
         self.harness.charm._stored.installed = True
 
-        # Mock Path for secret file operations
-        mock_secret_file = MagicMock()
-        mock_path_class.return_value = mock_secret_file
+        # Mock Path for secret/key/auth file operations
+        mock_path_obj = MagicMock()
+        mock_path_obj.exists.return_value = False
+        mock_path_class.return_value = mock_path_obj
 
         # Set configuration for server mode
         self.harness.update_config(
@@ -101,6 +102,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
                 "url": "http://example.com/channel",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
                 "store": "/srv/payload_rw",
+                "auth": "user:pass",
             }
         )
 
@@ -207,6 +209,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
                 "url": "http://example.com/channel",
                 "key": "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
                 "store": "/srv/payload_rw",
+                "auth": "alice:secret",
             }
         )
 
@@ -217,6 +220,48 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.assertIn("ExecStart=", service_content)
         self.assertIn("/relayd", service_content)
         self.assertIn("--store /srv/payload_rw", service_content)
+        self.assertIn("--user alice --pass secret", service_content)
+
+    @patch("charm.Path")
+    def test_config_changed_server_auth_without_channel_is_blocked(self, mock_path_class):
+        """Test server mode blocks authN when channelN is missing."""
+        self.harness.charm._stored.installed = True
+
+        mock_path_obj = MagicMock()
+        mock_path_obj.exists.return_value = False
+        mock_path_class.return_value = mock_path_obj
+
+        self.harness.update_config(
+            {
+                "mode": "server",
+                "auth0": "user:pass",
+            }
+        )
+
+        from ops.model import BlockedStatus
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
+
+    @patch("charm.Path")
+    def test_config_changed_client_invalid_auth_is_blocked(self, mock_path_class):
+        """Test client mode blocks invalid auth format."""
+        self.harness.charm._stored.installed = True
+
+        mock_path_obj = MagicMock()
+        mock_path_obj.is_absolute.return_value = True
+        mock_path_class.return_value = mock_path_obj
+
+        self.harness.update_config(
+            {
+                "mode": "client",
+                "url": "http://example.com/channel",
+                "auth": "invalid-format",
+            }
+        )
+
+        from ops.model import BlockedStatus
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
 
     @patch("charm.Path.mkdir")
     def test_ensure_directories(self, mock_mkdir):

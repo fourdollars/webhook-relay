@@ -9,6 +9,7 @@ This charm deploys the webhook-relay service in two operational modes:
 - client: Relay client connecting to webhook server and decrypting messages
 """
 
+import base64
 import logging
 import re
 import subprocess
@@ -125,6 +126,7 @@ class WebhookRelayCharm(CharmBase):
             Path("/var/lib/webhook-relay"),
             Path("/var/lib/webhook-relay/secret"),
             Path("/var/lib/webhook-relay/pem"),
+            Path("/var/lib/webhook-relay/auth"),
             Path("/var/log/webhook-relay"),
         ]
         for directory in dirs:
@@ -150,6 +152,37 @@ class WebhookRelayCharm(CharmBase):
             return False
 
         return True
+
+    def _parse_basic_auth(self, auth_value: str, field_name: str):
+        """Parse user:pass basic auth input from charm config.
+
+        Returns:
+            tuple(user, password) or None if input is empty/invalid.
+        """
+        value = (auth_value or "").strip()
+        if not value:
+            return None
+
+        if ":" not in value:
+            self.unit.status = BlockedStatus(
+                f"Invalid {field_name}: must be in 'user:pass' format"
+            )
+            return None
+
+        user, password = value.split(":", 1)
+        if not user:
+            self.unit.status = BlockedStatus(
+                f"Invalid {field_name}: username must not be empty"
+            )
+            return None
+
+        if any(ch.isspace() for ch in user) or any(ch.isspace() for ch in password):
+            self.unit.status = BlockedStatus(
+                f"Invalid {field_name}: whitespace is not allowed in user/pass"
+            )
+            return None
+
+        return user, password
 
     def _configure_webhook_mode(self) -> bool:
         """Configure webhook server mode."""
@@ -210,6 +243,47 @@ class WebhookRelayCharm(CharmBase):
                     f"Wrote public key file for channel {i} (no channel, using numeric)"
                 )
 
+        # Write SSE Basic Auth files (auth0-9) using channel as filename
+        for i in range(10):
+            channel_id = self.config.get(f"channel{i}", "")
+            auth_value = self.config.get(f"auth{i}", "")
+
+            if auth_value and not channel_id:
+                self.unit.status = BlockedStatus(
+                    f"Invalid auth{i}: channel{i} is required when auth{i} is set"
+                )
+                logger.error(
+                    "auth%s configured without channel%s; refusing config", i, i
+                )
+                return False
+
+            # If auth is configured for this channel, write base64(user:pass) token
+            if channel_id and auth_value:
+                parsed = self._parse_basic_auth(auth_value, f"auth{i}")
+                if parsed is None:
+                    logger.error("Invalid auth%s format", i)
+                    return False
+
+                user, password = parsed
+                token = base64.b64encode(
+                    f"{user}:{password}".encode("utf-8")
+                ).decode("utf-8")
+
+                auth_file = Path("/var/lib/webhook-relay/auth") / channel_id
+                auth_file.write_text(token)
+                auth_file.chmod(0o600)
+                logger.info(
+                    "Wrote auth file for channel %s (channel: %s)", i, channel_id
+                )
+            elif channel_id:
+                # auth unset for channel: remove managed auth file if it exists
+                auth_file = Path("/var/lib/webhook-relay/auth") / channel_id
+                if auth_file.exists():
+                    auth_file.unlink()
+                    logger.info(
+                        "Removed auth file for channel %s (channel: %s)", i, channel_id
+                    )
+
         # Create systemd service file for webhook mode
         service_content = self._generate_webhook_service()
         service_file = Path("/etc/systemd/system/webhook-relay.service")
@@ -228,6 +302,12 @@ class WebhookRelayCharm(CharmBase):
         url = self.config.get("url", "")
         if not url:
             self.unit.status = BlockedStatus("relayd mode requires 'url' configuration")
+            return False
+
+        # Validate optional client Basic Auth configuration
+        client_auth = (self.config.get("auth", "") or "").strip()
+        if client_auth and self._parse_basic_auth(client_auth, "auth") is None:
+            logger.error("Invalid client auth format")
             return False
 
         # Validate optional client storage path
@@ -320,6 +400,13 @@ WantedBy=multi-user.target
         if store_path:
             cmd_args.extend(["--store", store_path])
             logger.info(f"Configured client storage path: {store_path}")
+
+        client_auth = (self.config.get("auth", "") or "").strip()
+        parsed_auth = self._parse_basic_auth(client_auth, "auth")
+        if parsed_auth:
+            user, password = parsed_auth
+            cmd_args.extend(["--user", user, "--pass", password])
+            logger.info("Configured SSE Basic Auth for relayd user '%s'", user)
 
         env_vars = ["RUST_LOG=info"]
 

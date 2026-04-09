@@ -174,6 +174,47 @@ config:
       type: string
       default: ""
       description: Secret key for channel 9 signature validation (server mode)
+
+    auth0:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 0 SSE subscription, format user:pass (server mode)
+    auth1:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 1 SSE subscription, format user:pass (server mode)
+    auth2:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 2 SSE subscription, format user:pass (server mode)
+    auth3:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 3 SSE subscription, format user:pass (server mode)
+    auth4:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 4 SSE subscription, format user:pass (server mode)
+    auth5:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 5 SSE subscription, format user:pass (server mode)
+    auth6:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 6 SSE subscription, format user:pass (server mode)
+    auth7:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 7 SSE subscription, format user:pass (server mode)
+    auth8:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 8 SSE subscription, format user:pass (server mode)
+    auth9:
+      type: string
+      default: ""
+      description: Basic Auth credential for channel 9 SSE subscription, format user:pass (server mode)
     
     key0:
       type: string
@@ -234,6 +275,13 @@ config:
       type: string
       default: ""
       description: RSA private key PEM for decryption (client mode only)
+
+    auth:
+      type: string
+      default: ""
+      description: |
+        Optional SSE Basic Auth credential for client mode.
+        Format: user:pass. When set, charm passes --user/--pass to relayd.
 
     store:
       type: string
