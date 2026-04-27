@@ -46,6 +46,7 @@ impl Default for HeartbeatConfig {
 struct ConnectionState {
     last_ping: Option<Instant>,
     is_connected: bool,
+    pings_received: u64,
 }
 
 #[derive(Debug)]
@@ -418,6 +419,7 @@ async fn main() -> Result<(), AppError> {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         last_ping: None,
         is_connected: false,
+        pings_received: 0,
     }));
 
     match run_client_with_reconnection(
@@ -485,6 +487,7 @@ async fn run_client_with_reconnection(
             let mut state = connection_state.lock().await;
             state.last_ping = None;
             state.is_connected = false;
+            state.pings_received = 0;
         }
 
         let result = run_client_session(
@@ -503,6 +506,19 @@ async fn run_client_with_reconnection(
                 return Ok(());
             }
             Err(AppError::HeartbeatTimeout) | Err(AppError::ConnectionFailed(_)) => {
+                // If this session received pings the connection was healthy before it
+                // dropped. Reset the attempt counter and backoff so that periodic
+                // connection drops (e.g. nginx keepalive resets, NAT timeouts) never
+                // exhaust the retry budget.
+                let session_was_healthy = {
+                    let state = connection_state.lock().await;
+                    state.pings_received > 0
+                };
+                if session_was_healthy {
+                    current_attempt = 0;
+                    backoff_duration = config.initial_backoff;
+                }
+
                 current_attempt += 1;
 
                 // Log appropriately based on error type
@@ -610,6 +626,7 @@ async fn run_client_session(
                             "ping" => {
                                 let mut state = connection_state.lock().await;
                                 state.last_ping = Some(Instant::now());
+                                state.pings_received += 1;
                                 log::debug!("Received ping event, updated heartbeat timestamp");
                             }
                             "webhook" => {
@@ -807,10 +824,12 @@ mod tests {
         let state = ConnectionState {
             last_ping: None,
             is_connected: false,
+            pings_received: 0,
         };
 
         assert!(state.last_ping.is_none());
         assert!(!state.is_connected);
+        assert_eq!(state.pings_received, 0);
     }
 
     #[tokio::test]
@@ -819,6 +838,7 @@ mod tests {
         let connection_state = Arc::new(Mutex::new(ConnectionState {
             last_ping: Some(Instant::now() - Duration::from_secs(35)), // 35 seconds ago
             is_connected: true,
+            pings_received: 0,
         }));
 
         let state = connection_state.lock().await;
