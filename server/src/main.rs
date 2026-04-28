@@ -362,7 +362,12 @@ async fn relay_get(
     res_builder
         .insert_header(("Content-Type", "text/event-stream"))
         .insert_header(("Cache-Control", "no-cache"))
-        .insert_header(("Connection", "keep-alive"));
+        .insert_header(("Connection", "keep-alive"))
+        // Disable nginx proxy buffering so SSE events (pings and webhooks) are
+        // forwarded to the client immediately instead of being held in the buffer.
+        // Without this, pings accumulate in nginx's buffer after a webhook flush
+        // and the client sees no pings for 30+ seconds, triggering heartbeat timeouts.
+        .insert_header(("X-Accel-Buffering", "no"));
 
     res_builder.body(BodyStream::new(get_or_create_stream_channel_stream(
         channel_id,
