@@ -579,7 +579,10 @@ async fn run_client_session(
 ) -> Result<(), AppError> {
     let private_key_path = private_key_path.clone();
     let store_path = store_path.map(|p| Arc::new(p));
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
 
     // Start heartbeat monitoring task
     let heartbeat_state = connection_state.clone();
@@ -638,43 +641,68 @@ async fn run_client_session(
                                     }
                                 };
                                 if let Ok(payload) = serde_json::from_slice::<Payload>(&data) {
-                                    let sp = store_path.as_ref().map(|a| a.as_ref());
-                                    if let Err(e) = handle_payload(
-                                        &payload,
-                                        &forward_post_url,
-                                        &sp.map(|p: &PathBuf| p.clone()),
-                                        &http_client,
-                                    )
-                                    .await
-                                    {
-                                        eprintln!("Failed to handle webhook payload: {}", e);
-                                    }
+                                    let forward_url = forward_post_url.clone();
+                                    let sp = store_path.clone();
+                                    let client = http_client.clone();
+                                    tokio::spawn(async move {
+                                        let sp = sp.as_deref().cloned();
+                                        if let Err(e) = handle_payload(
+                                            &payload,
+                                            &forward_url,
+                                            &sp,
+                                            &client,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("Failed to handle webhook payload: {}", e);
+                                        }
+                                    });
                                 } else {
                                     eprintln!("Webhook event unknown data: {:?}", data);
                                 }
                             }
-                            "encrypted" => match decrypt_symmetric(&ev.data, &private_key_path) {
-                                Ok(decrypted) => {
-                                    if let Ok(payload) =
-                                        serde_json::from_slice::<Payload>(decrypted.as_bytes())
-                                    {
-                                        let sp = store_path.as_ref().map(|a| a.as_ref());
-                                        if let Err(e) = handle_payload(
-                                            &payload,
-                                            &forward_post_url,
-                                            &sp.map(|p: &PathBuf| p.clone()),
-                                            &http_client,
-                                        )
-                                        .await
-                                        {
-                                            eprintln!("Failed to handle encrypted payload: {}", e);
+                            "encrypted" => {
+                                let encrypted_data = ev.data.clone();
+                                let key_path = private_key_path.clone();
+                                let forward_url = forward_post_url.clone();
+                                let sp = store_path.clone();
+                                let client = http_client.clone();
+                                tokio::spawn(async move {
+                                    let decrypted = tokio::task::spawn_blocking(move || {
+                                        decrypt_symmetric(&encrypted_data, &key_path)
+                                    })
+                                    .await;
+                                    match decrypted {
+                                        Ok(Ok(decrypted)) => {
+                                            if let Ok(payload) = serde_json::from_slice::<Payload>(
+                                                decrypted.as_bytes(),
+                                            ) {
+                                                let sp = sp.as_deref().cloned();
+                                                if let Err(e) = handle_payload(
+                                                    &payload,
+                                                    &forward_url,
+                                                    &sp,
+                                                    &client,
+                                                )
+                                                .await
+                                                {
+                                                    eprintln!(
+                                                        "Failed to handle encrypted payload: {}",
+                                                        e
+                                                    );
+                                                }
+                                            } else {
+                                                eprintln!(
+                                                    "Encrypted event unknown data: {:?}",
+                                                    decrypted
+                                                );
+                                            }
                                         }
-                                    } else {
-                                        eprintln!("Encrypted event unknown data: {:?}", decrypted);
+                                        Ok(Err(e)) => eprintln!("Failed to decrypt event: {}", e),
+                                        Err(e) => eprintln!("Decrypt task failed: {}", e),
                                     }
-                                }
-                                Err(e) => eprintln!("Failed to decrypt event: {}", e),
-                            },
+                                });
+                            }
                             _ => log::warn!("Received unknown event type: {}", ev.event_type),
                         },
                         es::SSE::Comment(comment) => {
