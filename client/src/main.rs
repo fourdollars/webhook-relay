@@ -211,12 +211,31 @@ async fn handle_payload(
             serde_json::from_str(&payload.headers)
                 .map_err(|e| AppError::Other(format!("Failed to parse headers JSON: {}", e)))?;
 
-        // Build HTTP request with forwarded headers
+        // Build HTTP request with forwarded headers.
+        // Skip hop-by-hop and proxy-added headers that must not be forwarded:
+        // reqwest sets content-length from the body automatically; forwarding it
+        // causes a conflict in hyper 1.x that results in "error sending request".
+        const HOP_BY_HOP: &[&str] = &[
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "keep-alive",
+            "te",
+            "trailers",
+            "upgrade",
+            "proxy-authorization",
+            "proxy-authenticate",
+            "host",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "x-real-ip",
+        ];
         let mut request = http_client.post(url);
-
         for (key, value) in headers_map.iter() {
-            // Forward all headers from the original webhook
-            request = request.header(key, value);
+            if !HOP_BY_HOP.contains(&key.to_lowercase().as_str()) {
+                request = request.header(key, value);
+            }
         }
 
         // Send the body as-is (not wrapped in JSON)
@@ -237,7 +256,7 @@ async fn handle_payload(
                 }
             }
             Err(e) => {
-                log::error!("Failed to forward payload to {}: {}", url, e);
+                log::error!("Failed to forward payload to {}: {:?}", url, e);
                 return Err(AppError::Other(format!("HTTP POST failed: {}", e)));
             }
         }
