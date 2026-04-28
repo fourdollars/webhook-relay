@@ -599,7 +599,8 @@ async fn run_client_session(
     let private_key_path = private_key_path.clone();
     let store_path = store_path.map(|p| Arc::new(p));
     let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
         .build()
         .unwrap_or_default();
     // Limit concurrent forwarding tasks to prevent memory exhaustion and downstream overload
