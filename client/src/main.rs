@@ -8,7 +8,7 @@ use rsa::{RsaPrivateKey, pkcs1v15::Pkcs1v15Encrypt};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{fs, path::PathBuf, sync::Arc, time::Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use env_logger;
 use futures::TryStreamExt;
@@ -583,6 +583,8 @@ async fn run_client_session(
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_default();
+    // Limit concurrent forwarding tasks to prevent memory exhaustion and downstream overload
+    let forward_semaphore = Arc::new(Semaphore::new(10));
 
     // Start heartbeat monitoring task
     let heartbeat_state = connection_state.clone();
@@ -644,7 +646,12 @@ async fn run_client_session(
                                     let forward_url = forward_post_url.clone();
                                     let sp = store_path.clone();
                                     let client = http_client.clone();
+                                    let sem = forward_semaphore.clone();
                                     tokio::spawn(async move {
+                                        let _permit = match sem.acquire().await {
+                                            Ok(p) => p,
+                                            Err(_) => return, // semaphore closed (session ending)
+                                        };
                                         let sp = sp.as_deref().cloned();
                                         if let Err(e) = handle_payload(
                                             &payload,
@@ -667,6 +674,7 @@ async fn run_client_session(
                                 let forward_url = forward_post_url.clone();
                                 let sp = store_path.clone();
                                 let client = http_client.clone();
+                                let sem = forward_semaphore.clone();
                                 tokio::spawn(async move {
                                     let decrypted = tokio::task::spawn_blocking(move || {
                                         decrypt_symmetric(&encrypted_data, &key_path)
@@ -677,6 +685,10 @@ async fn run_client_session(
                                             if let Ok(payload) = serde_json::from_slice::<Payload>(
                                                 decrypted.as_bytes(),
                                             ) {
+                                                let _permit = match sem.acquire().await {
+                                                    Ok(p) => p,
+                                                    Err(_) => return,
+                                                };
                                                 let sp = sp.as_deref().cloned();
                                                 if let Err(e) = handle_payload(
                                                     &payload,
