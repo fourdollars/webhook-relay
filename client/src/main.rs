@@ -16,6 +16,7 @@ use log;
 use std::{env, process, time::Duration};
 
 use eventsource_client as es;
+use launchdarkly_sdk_transport::HyperTransport;
 
 // Heartbeat configuration constants
 const DEFAULT_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
@@ -499,7 +500,10 @@ async fn run_client_with_reconnection(
             })?;
         }
 
-        let client = builder.build();
+        let transport = HyperTransport::new_https().map_err(|e| {
+            AppError::ConnectionFailed(format!("Failed to create HTTP transport: {}", e))
+        })?;
+        let client = builder.build_with_transport(transport);
 
         // Reset connection state for new attempt
         {
