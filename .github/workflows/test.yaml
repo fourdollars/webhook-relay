@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           python-version: '3.10'
@@ -51,10 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           python-version: '3.10'
@@ -74,7 +74,7 @@ jobs:
           uv run coverage xml
       
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         if: always()
         with:
           files: ./charm/coverage.xml
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -100,7 +100,7 @@ jobs:
         run: cargo build --release --manifest-path=client/Cargo.toml
       
       - name: Upload binaries as artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rust-binaries
           path: |
@@ -113,7 +113,7 @@ jobs:
     needs: [lint, unit-test, build-rust]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Setup LXD
         uses: canonical/setup-lxd@v1
@@ -124,7 +124,7 @@ jobs:
         run: sudo snap install charmcraft --classic
       
       - name: Download Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rust-binaries
           path: target/release/
@@ -147,7 +147,7 @@ jobs:
         run: charmcraft pack
       
       - name: Upload charm artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: webhook-relay-charm
           path: charm/*.charm
@@ -158,7 +158,7 @@ jobs:
     needs: [pack-charm]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Setup LXD
         uses: canonical/setup-lxd@v1
@@ -181,7 +181,7 @@ jobs:
         run: juju add-model test-model
       
       - name: Download charm
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: webhook-relay-charm
           path: charm/
@@ -539,10 +539,10 @@ jobs:
     needs: [build-rust]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       
       - name: Download Rust binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rust-binaries
           path: target/release/
