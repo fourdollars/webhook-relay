@@ -46,10 +46,14 @@ config:
       type: string
       default: server
       description: |
-        Operation mode: 'server' (relay server) or 'client' (relay client).
+        Operation mode: 'server' (relay server), 'client' (relay client) or
+        'hybrid' (both on the same unit).
         
         - server: Run as SSE webhook relay server
         - client: Run as relay client connecting to a webhook server
+        - hybrid: Run the server and the client at the same time; both the
+          server and client options must be valid, and the client 'url' must
+          not point at this unit's own server
     
     # Server mode configuration
     host:

@@ -4,16 +4,19 @@
 
 """Charm for webhook-relay service.
 
-This charm deploys the webhook-relay service in two operational modes:
+This charm deploys the webhook-relay service in three operational modes:
 - server: SSE relay server accepting webhooks and broadcasting via SSE
 - client: Relay client connecting to webhook server and decrypting messages
+- hybrid: both of the above on the same unit at the same time
 """
 
 import base64
 import logging
 import re
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ops.charm import CharmBase
 from ops.framework import StoredState
@@ -21,6 +24,20 @@ from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
 
 logger = logging.getLogger(__name__)
+
+SYSTEMD_DIR = "/etc/systemd/system"
+LEGACY_SERVICE = "webhook-relay"
+SERVICES = {
+    "server": "webhook-relay-server",
+    "client": "webhook-relay-client",
+}
+MODE_COMPONENTS = {
+    "server": ("server",),
+    "client": ("client",),
+    "hybrid": ("server", "client"),
+}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
 
 
 class WebhookRelayCharm(CharmBase):
@@ -30,11 +47,12 @@ class WebhookRelayCharm(CharmBase):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self._stored.set_default(mode=None, installed=False)
+        self._stored.set_default(mode=None, installed=False, started=False)
 
         # Register event handlers
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.upgrade_charm, self._on_config_changed)
         self.framework.observe(self.on.start, self._on_start)
         self.framework.observe(self.on.stop, self._on_stop)
         self.framework.observe(self.on.remove, self._on_remove)
@@ -69,32 +87,45 @@ class WebhookRelayCharm(CharmBase):
         mode = self.config["mode"]
 
         # Validate mode
-        if mode not in ["server", "client"]:
+        if mode not in MODE_COMPONENTS:
             self.unit.status = BlockedStatus(
-                f"Invalid mode: {mode}. Must be 'server' or 'client'"
+                f"Invalid mode: {mode}. Must be 'server', 'client' or 'hybrid'"
             )
             return
 
-        # Mode-specific configuration and validation
-        if mode == "server":
-            if not self._configure_webhook_mode():
+        components = MODE_COMPONENTS[mode]
+
+        # Validate every enabled component before touching any service
+        if "client" in components and "server" in components:
+            if self._client_targets_local_server():
+                self.unit.status = BlockedStatus(
+                    "Relay loop: client 'url' points at this unit's own server"
+                )
                 return
-        elif mode == "client":
-            if not self._configure_relayd_mode():
-                return
+        if "server" in components and not self._configure_webhook_mode():
+            return
+        if "client" in components and not self._configure_relayd_mode():
+            return
+
+        self._migrate_legacy_service()
+        for component in SERVICES:
+            if component in components:
+                self._write_service(component)
+            else:
+                self._remove_service(component)
+        subprocess.run(["systemctl", "daemon-reload"], check=True)
 
         # Store the current mode
         self._stored.mode = mode
 
         # Open the server port so `juju expose` takes effect
-        if mode == "server":
+        if "server" in components:
             self.unit.set_ports(int(self.config["port"]))
         else:
             self.unit.set_ports()
 
-        # Restart the service if it's running
-        if self.unit.is_leader():
-            self._restart_service()
+        # Apply the new configuration to services that should be running
+        self._restart_service()
 
         self.unit.status = ActiveStatus(f"Ready in {mode} mode")
 
@@ -111,6 +142,7 @@ class WebhookRelayCharm(CharmBase):
         self.unit.status = MaintenanceStatus("Starting webhook-relay")
 
         if self._start_service():
+            self._stored.started = True
             self.unit.status = ActiveStatus(f"Running in {self._stored.mode} mode")
         else:
             self.unit.status = BlockedStatus("Failed to start service")
@@ -119,6 +151,7 @@ class WebhookRelayCharm(CharmBase):
         """Handle the stop event."""
         self.unit.status = MaintenanceStatus("Stopping webhook-relay")
         self._stop_service()
+        self._stored.started = False
 
     def _on_remove(self, event):
         """Handle the remove event."""
@@ -290,14 +323,6 @@ class WebhookRelayCharm(CharmBase):
                         "Removed auth file for channel %s (channel: %s)", i, channel_id
                     )
 
-        # Create systemd service file for webhook mode
-        service_content = self._generate_webhook_service()
-        service_file = Path("/etc/systemd/system/webhook-relay.service")
-        service_file.write_text(service_content)
-
-        # Reload systemd daemon
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-
         return True
 
     def _configure_relayd_mode(self) -> bool:
@@ -337,15 +362,66 @@ class WebhookRelayCharm(CharmBase):
             key_file.chmod(0o600)
             logger.info("Wrote private key file")
 
-        # Create systemd service file for relayd mode
-        service_content = self._generate_relayd_service()
-        service_file = Path("/etc/systemd/system/webhook-relay.service")
-        service_file.write_text(service_content)
-
-        # Reload systemd daemon
-        subprocess.run(["systemctl", "daemon-reload"], check=True)
-
         return True
+
+    def _client_targets_local_server(self) -> bool:
+        """Best-effort check that the client url points at this unit's server."""
+        parsed = urlparse(self.config.get("url", "") or "")
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return False
+        try:
+            url_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False
+        if url_port != int(self.config["port"]):
+            return False
+
+        bind = (self.config.get("host", "") or "").strip().lower()
+        if bind in WILDCARD_HOSTS:
+            return host in LOCAL_HOSTS or host == socket.gethostname().lower()
+        return host == bind or (bind in LOCAL_HOSTS and host in LOCAL_HOSTS)
+
+    def _service_file(self, name: str) -> Path:
+        return Path(SYSTEMD_DIR) / f"{name}.service"
+
+    def _write_service(self, component: str):
+        """Write the systemd unit for a component."""
+        if component == "server":
+            content = self._generate_webhook_service()
+        else:
+            content = self._generate_relayd_service()
+        self._service_file(SERVICES[component]).write_text(content)
+
+    def _remove_service(self, component: str):
+        """Stop and remove the systemd unit for a component."""
+        name = SERVICES[component]
+        subprocess.run(["systemctl", "stop", name], check=False)
+        subprocess.run(["systemctl", "disable", name], check=False)
+        service_file = self._service_file(name)
+        if service_file.exists():
+            service_file.unlink()
+
+    def _migrate_legacy_service(self):
+        """Replace the single webhook-relay.service of older charm revisions."""
+        service_file = self._service_file(LEGACY_SERVICE)
+        if not service_file.exists():
+            return
+
+        result = subprocess.run(
+            ["systemctl", "is-active", LEGACY_SERVICE],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            self._stored.started = True
+        subprocess.run(["systemctl", "stop", LEGACY_SERVICE], check=False)
+        subprocess.run(["systemctl", "disable", LEGACY_SERVICE], check=False)
+        service_file.unlink()
+        logger.info("Migrated legacy %s.service", LEGACY_SERVICE)
+
+    def _enabled_services(self):
+        return [SERVICES[c] for c in MODE_COMPONENTS.get(self._stored.mode, ())]
 
     def _generate_webhook_service(self) -> str:
         """Generate systemd service file for webhook mode."""
@@ -436,44 +512,48 @@ WantedBy=multi-user.target
 """
 
     def _start_service(self) -> bool:
-        """Start the webhook-relay service."""
+        """Start the services for the configured mode."""
         try:
-            subprocess.run(["systemctl", "enable", "webhook-relay"], check=True)
-            subprocess.run(["systemctl", "start", "webhook-relay"], check=True)
-            logger.info("webhook-relay service started successfully")
+            for name in self._enabled_services():
+                subprocess.run(["systemctl", "enable", name], check=True)
+                subprocess.run(["systemctl", "start", name], check=True)
+                logger.info("%s started successfully", name)
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to start service: {e}")
             return False
 
     def _stop_service(self):
-        """Stop the webhook-relay service."""
+        """Stop all webhook-relay services."""
         try:
-            subprocess.run(["systemctl", "stop", "webhook-relay"], check=False)
-            subprocess.run(["systemctl", "disable", "webhook-relay"], check=False)
-            logger.info("webhook-relay service stopped")
+            for name in [*SERVICES.values(), LEGACY_SERVICE]:
+                subprocess.run(["systemctl", "stop", name], check=False)
+                subprocess.run(["systemctl", "disable", name], check=False)
+            logger.info("webhook-relay services stopped")
         except Exception as e:
             logger.error(f"Error stopping service: {e}")
 
     def _restart_service(self):
-        """Restart the webhook-relay service."""
+        """Restart enabled services once the unit has been started."""
+        if not self._stored.started:
+            return
         try:
-            result = subprocess.run(
-                ["systemctl", "is-active", "webhook-relay"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:  # Service is running
-                subprocess.run(["systemctl", "restart", "webhook-relay"], check=True)
-                logger.info("webhook-relay service restarted")
+            for name in self._enabled_services():
+                subprocess.run(["systemctl", "enable", name], check=True)
+                subprocess.run(["systemctl", "restart", name], check=True)
+                logger.info("%s restarted", name)
         except Exception as e:
             logger.error(f"Error restarting service: {e}")
 
     def _cleanup(self):
         """Clean up resources."""
-        service_file = Path("/etc/systemd/system/webhook-relay.service")
-        if service_file.exists():
-            service_file.unlink()
+        removed = False
+        for name in [*SERVICES.values(), LEGACY_SERVICE]:
+            service_file = self._service_file(name)
+            if service_file.exists():
+                service_file.unlink()
+                removed = True
+        if removed:
             subprocess.run(["systemctl", "daemon-reload"], check=False)
 
         logger.info("Cleanup completed")

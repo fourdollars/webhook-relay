@@ -4,7 +4,9 @@
 
 """Unit tests for webhook-relay charm."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ops.testing import Harness
@@ -284,6 +286,101 @@ class TestWebhookRelayCharm(unittest.TestCase):
 
         # Verify mkdir was called
         self.assertTrue(mock_mkdir.called)
+
+
+class TestHybridMode(unittest.TestCase):
+    """Test cases for hybrid mode and per-component services."""
+
+    def setUp(self):
+        self.harness = Harness(WebhookRelayCharm)
+        self.addCleanup(self.harness.cleanup)
+        self.harness.begin()
+        self.harness.charm._stored.installed = True
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.systemd = Path(tmp.name)
+        for target in (
+            patch("charm.SYSTEMD_DIR", str(self.systemd)),
+            patch.object(
+                WebhookRelayCharm, "_configure_webhook_mode", return_value=True
+            ),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+        run = patch("charm.subprocess.run")
+        self.mock_run = run.start()
+        self.mock_run.return_value = MagicMock(returncode=0)
+        self.addCleanup(run.stop)
+
+    def _units(self):
+        return sorted(p.name for p in self.systemd.iterdir())
+
+    def _systemctl(self, verb):
+        return [c.args[0] for c in self.mock_run.call_args_list if c.args[0][1] == verb]
+
+    def test_hybrid_writes_both_units_and_opens_port(self):
+        with patch.object(
+            WebhookRelayCharm, "_configure_relayd_mode", return_value=True
+        ):
+            self.harness.update_config(
+                {"mode": "hybrid", "url": "http://upstream:3000/c", "port": 3000}
+            )
+
+        self.assertEqual(
+            self._units(),
+            ["webhook-relay-client.service", "webhook-relay-server.service"],
+        )
+        self.assertEqual(
+            {(p.protocol, p.port) for p in self.harness.charm.unit.opened_ports()},
+            {("tcp", 3000)},
+        )
+
+    def test_hybrid_invalid_client_blocks_and_starts_nothing(self):
+        from ops.model import BlockedStatus
+
+        self.harness.charm._stored.started = True
+        self.harness.update_config({"mode": "hybrid"})  # client url missing
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
+        self.assertEqual(self._units(), [])
+        self.assertEqual(self._systemctl("restart"), [])
+
+    def test_hybrid_rejects_client_pointing_at_local_server(self):
+        from ops.model import BlockedStatus
+
+        self.harness.update_config(
+            {"mode": "hybrid", "url": "http://localhost:3000/c", "port": 3000}
+        )
+
+        self.assertIsInstance(self.harness.charm.unit.status, BlockedStatus)
+        self.assertIn("loop", self.harness.charm.unit.status.message)
+        self.assertEqual(self._units(), [])
+
+    def test_mode_switch_removes_stale_unit_and_closes_port(self):
+        with patch.object(
+            WebhookRelayCharm, "_configure_relayd_mode", return_value=True
+        ):
+            self.harness.update_config(
+                {"mode": "hybrid", "url": "http://upstream:3000/c"}
+            )
+            self.harness.update_config({"mode": "client"})
+
+        self.assertEqual(self._units(), ["webhook-relay-client.service"])
+        self.assertEqual(self.harness.charm.unit.opened_ports(), set())
+
+    def test_upgrade_migrates_running_legacy_service(self):
+        (self.systemd / "webhook-relay.service").write_text("legacy")
+
+        self.harness.charm.on.upgrade_charm.emit()
+
+        self.assertEqual(self._units(), ["webhook-relay-server.service"])
+        self.assertTrue(self.harness.charm._stored.started)
+        self.assertIn(
+            ["systemctl", "restart", "webhook-relay-server"], self._systemctl("restart")
+        )
+        self.assertNotIn("webhook-relay.service", self._units())
 
 
 if __name__ == "__main__":

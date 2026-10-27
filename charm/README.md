@@ -4,9 +4,10 @@ A Juju Charm for deploying the webhook-relay service, a Server-Sent Events (SSE)
 
 ## Features
 
-- **Two operational modes:**
+- **Three operational modes:**
   - **server**: Acts as a relay server accepting webhook POST requests and broadcasting them via SSE
   - **client**: Acts as a relay client connecting to a webhook server
+  - **hybrid**: Runs the server and the client on the same unit at the same time
   
 - **Security features:**
   - HMAC signature validation (X-Hub-Signature, X-Gitlab-Token, X-Line-Signature)
@@ -46,11 +47,37 @@ juju config relay-client url="http://webhook-server:3000/channel-id"
 juju config relay-client key="$(cat private_key.pem)"
 ```
 
+### Deploy in hybrid mode (server and client on one unit)
+
+```bash
+juju deploy webhook-relay relay-hybrid
+juju config relay-hybrid mode=hybrid
+# Server half
+juju config relay-hybrid channel0="$CHANNEL_ID" secret0="..." key0="$(cat public_key_0.pem)"
+# Client half, pointing at an upstream relay (not this unit)
+juju config relay-hybrid url="http://upstream:3000/channel-id" key="$(cat private_key.pem)"
+juju expose relay-hybrid
+```
+
+Hybrid mode validates both option sets together; if either is invalid the unit is
+blocked and neither service is started. A client `url` that points at the unit's own
+server is rejected to prevent a relay loop (best-effort check).
+
+### Services and ports
+
+Each component runs as its own systemd service: `webhook-relay-server.service` and
+`webhook-relay-client.service`. Units deployed by earlier revisions used a single
+`webhook-relay.service`; the charm migrates them automatically on upgrade or config
+change. Update anything external that references the old unit name.
+
+The configured `port` is opened (so `juju expose` works) whenever the server runs,
+i.e. in `server` and `hybrid` modes.
+
 ## Configuration
 
 ### Common options
 
-- `mode`: Operation mode - `server` (relay server) or `client` (relay client)
+- `mode`: Operation mode - `server` (relay server), `client` (relay client) or `hybrid` (both)
 
 ### Server mode options
 
