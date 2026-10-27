@@ -83,6 +83,17 @@ class TestWebhookRelayCharm(unittest.TestCase):
 
         # Verify mode was stored
         self.assertEqual(self.harness.charm._stored.mode, "server")
+        self.assertEqual(
+            {(p.protocol, p.port) for p in self.harness.charm.unit.opened_ports()},
+            {("tcp", 3000)},
+        )
+
+        # Changing the port config replaces the opened port
+        self.harness.update_config({"port": 4000})
+        self.assertEqual(
+            {(p.protocol, p.port) for p in self.harness.charm.unit.opened_ports()},
+            {("tcp", 4000)},
+        )
 
     @patch("charm.Path")
     @patch("charm.subprocess.run")
@@ -108,6 +119,7 @@ class TestWebhookRelayCharm(unittest.TestCase):
 
         # Verify mode was stored
         self.assertEqual(self.harness.charm._stored.mode, "client")
+        self.assertEqual(self.harness.charm.unit.opened_ports(), set())
 
     @patch("charm.Path")
     def test_config_changed_relayd_invalid_store_path(self, mock_path_class):

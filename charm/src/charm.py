@@ -86,6 +86,12 @@ class WebhookRelayCharm(CharmBase):
         # Store the current mode
         self._stored.mode = mode
 
+        # Open the server port so `juju expose` takes effect
+        if mode == "server":
+            self.unit.set_ports(int(self.config["port"]))
+        else:
+            self.unit.set_ports()
+
         # Restart the service if it's running
         if self.unit.is_leader():
             self._restart_service()
