@@ -465,7 +465,7 @@ jobs:
       - name: Verify C7 flags in ExecStart
         run: |
           EXEC_START=$(juju exec --unit relay-client/0 -- \
-            systemctl show webhook-relay-server -p ExecStart)
+            systemctl show webhook-relay-client -p ExecStart)
           echo "ExecStart: $EXEC_START"
           echo "$EXEC_START" | grep -q -- "--store /srv/payload_store"
           echo "$EXEC_START" | grep -q -- "--user u7 --pass p7"
