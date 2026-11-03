@@ -196,7 +196,7 @@ jobs:
       - name: Test webhook mode status
         run: |
           juju status webhook-relay
-          juju exec --unit webhook-relay/0 -- systemctl status webhook-relay
+          juju exec --unit webhook-relay/0 -- systemctl status webhook-relay-server
       
       - name: Deploy charm in relayd mode
         run: |
@@ -206,7 +206,7 @@ jobs:
       - name: Test relayd mode status
         run: |
           juju status relay-client
-          juju exec --unit relay-client/0 -- systemctl status webhook-relay
+          juju exec --unit relay-client/0 -- systemctl status webhook-relay-client
 
       - name: Set up multiple channels on server
         run: |
