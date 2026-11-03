@@ -196,7 +196,7 @@ jobs:
       - name: Test webhook mode status
         run: |
           juju status webhook-relay
-          juju exec --unit webhook-relay/0 -- systemctl status webhook-relay
+          juju exec --unit webhook-relay/0 -- systemctl status webhook-relay-server
       
       - name: Deploy charm in relayd mode
         run: |
@@ -206,7 +206,7 @@ jobs:
       - name: Test relayd mode status
         run: |
           juju status relay-client
-          juju exec --unit relay-client/0 -- systemctl status webhook-relay
+          juju exec --unit relay-client/0 -- systemctl status webhook-relay-client
 
       - name: Set up multiple channels on server
         run: |
@@ -465,7 +465,7 @@ jobs:
       - name: Verify C7 flags in ExecStart
         run: |
           EXEC_START=$(juju exec --unit relay-client/0 -- \
-            systemctl show webhook-relay -p ExecStart)
+            systemctl show webhook-relay-client -p ExecStart)
           echo "ExecStart: $EXEC_START"
           echo "$EXEC_START" | grep -q -- "--store /srv/payload_store"
           echo "$EXEC_START" | grep -q -- "--user u7 --pass p7"
