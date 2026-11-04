@@ -103,6 +103,20 @@ sequenceDiagram
 PORT=3000 HOST=0.0.0.0 PING_INTERVAL_MS=2000 webhook-relay
 ```
 
+#### Logging and debugging
+
+The server never logs webhook bodies or credentials by default. At `RUST_LOG=info` it writes one summary line per webhook:
+
+```
+Received webhook: channel=<id> event=push delivery=<x-github-delivery> bytes=1234 sig=ok subscribers=2
+Rejected webhook: channel=<id> reason="missing signature"
+```
+
+To dig deeper:
+- **Subscriber side:** `relayd` prints the decrypted payloads to stdout. This is the only place where the content of encrypted channels can be read.
+- **Webhook sender:** GitHub "Recent Deliveries" and GitLab webhook events show the full request and response. Match them using `delivery=`.
+- **Opt-in server debugging:** `RUST_LOG=webhook_relay=debug` logs request headers, with `Authorization`, `Cookie`, `X-Gitlab-Token` and `X-*-Signature*` values replaced by `[REDACTED]`. Add `LOG_PAYLOADS=1` to also log bodies. Bodies are never logged for channels with a `pem/<channel>` key. Turn this off when you're done.
+
 ### Client
 
 **Print webhooks to stdout (default behavior):**

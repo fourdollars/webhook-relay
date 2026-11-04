@@ -4,14 +4,12 @@ use actix_web::{
 };
 use aes_gcm::{Aes256Gcm, aead::Aead};
 use base64::{Engine as _, engine::general_purpose};
-use chrono::Utc;
 use futures_util::stream::StreamExt;
 use hmac::{Hmac, Mac};
 use pkcs8::DecodePublicKey;
 use rand_core::{OsRng, RngCore};
 use rsa::{RsaPublicKey, pkcs1v15::Pkcs1v15Encrypt};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -174,27 +172,7 @@ fn get_or_create_stream_channel_stream(
                     format!(r#"{{"error": "Failed to serialize payload: {}"}}"#, e)
                 });
                 if payload.headers.len() > 0 {
-                    println!("{} {}", Utc::now(), &id);
-                    if let Ok(headers_value) =
-                        serde_json::from_str::<Value>(payload.headers.as_str())
-                    {
-                        if let Ok(headers) = serde_json::to_string_pretty(&headers_value) {
-                            println!("{}", headers);
-                        } else {
-                            println!("Failed to serialize headers: {}", payload.headers);
-                        }
-                    } else {
-                        println!("Failed to deserialize headers: {}", payload.headers);
-                    }
-                    if let Ok(body_value) = serde_json::from_str::<Value>(payload.body.as_str()) {
-                        if let Ok(body) = serde_json::to_string_pretty(&body_value) {
-                            println!("{}", body);
-                        } else {
-                            println!("Failed to serialize body: {}", payload.body);
-                        }
-                    } else {
-                        println!("Failed to deserialize body: {}", payload.body);
-                    }
+                    debug!("Delivering webhook to subscriber on channel '{}'", id);
                     let encrypted = format_encrypted_event(&json_string, &id);
                     if encrypted.len() > 0 {
                         encrypted
@@ -291,6 +269,8 @@ struct AppState {
     channels: GlobalChannels,
     /// Expected `Authorization: Basic` token for `/admin`; `None` disables the endpoint.
     admin_token: Option<String>,
+    /// `LOG_PAYLOADS=1`: allow logging webhook bodies at debug level.
+    log_payloads: bool,
     public_path: String,
 }
 
@@ -483,6 +463,49 @@ fn verify_webhook(
     found || secret_key.is_none()
 }
 
+fn has_signature_header(headers: &actix_web::http::header::HeaderMap) -> bool {
+    SIGNATURE_HEADERS
+        .iter()
+        .any(|(name, _)| headers.contains_key(*name))
+}
+
+/// Headers whose values are credentials and must never be logged.
+const SENSITIVE_HEADERS: [&str; 7] = [
+    "authorization",
+    "cookie",
+    "x-gitlab-token",
+    "x-hub-signature",
+    "x-hub-signature-256",
+    "x-line-signature",
+    "proxy-authorization",
+];
+
+fn redact_headers(headers: &HashMap<String, String>) -> std::collections::BTreeMap<&str, &str> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let sensitive = SENSITIVE_HEADERS.contains(&k.to_ascii_lowercase().as_str());
+            (
+                k.as_str(),
+                if sensitive { "[REDACTED]" } else { v.as_str() },
+            )
+        })
+        .collect()
+}
+
+fn first_header<'a>(headers: &'a HashMap<String, String>, names: &[&str]) -> &'a str {
+    names
+        .iter()
+        .find_map(|n| headers.get(*n))
+        .map_or("-", String::as_str)
+}
+
+/// Bodies are logged only on explicit opt-in, and never for end-to-end
+/// encrypted channels.
+fn should_log_body(log_payloads: bool, encrypted_channel: bool) -> bool {
+    log_payloads && !encrypted_channel
+}
+
 /// Handles POST requests to broadcast a payload to a specific SSE channel.
 #[post("/{id}")]
 async fn relay_post(
@@ -524,16 +547,43 @@ async fn relay_post(
         headers: serde_json::to_string(&headers).unwrap(),
     };
 
-    info!("Received: {:#?}", payload);
-
+    let signed = has_signature_header(req.headers());
     if !valid {
+        let reason = match (secret_key.is_some(), signed) {
+            (true, false) => "missing signature",
+            (false, _) => "signature sent but channel has no secret",
+            (true, true) => "invalid signature",
+        };
+        warn!("Rejected webhook: channel={} reason=\"{}\"", id, reason);
         return Err(actix_web::error::ErrorUnauthorized("Invalid signature"));
     }
 
-    // Try to get the broadcast sender, but don't fail if channel doesn't exist
-    // This allows webhook validation requests to succeed even without active subscribers
-    match get_broadcast_sender(id.clone(), data.channels.clone()) {
-        Ok(sender) => {
+    let sender = get_broadcast_sender(id.clone(), data.channels.clone()).ok();
+    info!(
+        "Received webhook: channel={} event={} delivery={} bytes={} sig={} subscribers={}",
+        id,
+        first_header(&headers, &["x-github-event", "x-gitlab-event"]),
+        first_header(&headers, &["x-github-delivery", "x-gitlab-event-uuid"]),
+        payload.body.len(),
+        if signed { "ok" } else { "none" },
+        sender.as_ref().map_or(0, |s| s.receiver_count()),
+    );
+    if log_enabled!(log::Level::Debug) {
+        debug!(
+            "Webhook headers: channel={} headers={:?}",
+            id,
+            redact_headers(&headers)
+        );
+        let encrypted = PathBuf::from(format!("pem/{}", id)).exists();
+        if should_log_body(data.log_payloads, encrypted) {
+            debug!("Webhook body: channel={} body={}", id, payload.body);
+        }
+    }
+
+    // A channel without subscribers is not an error, so webhook validation
+    // requests succeed even when nobody is listening yet.
+    match sender {
+        Some(sender) => {
             // Send the payload to all subscribers of the broadcast channel.
             if let Err(e) = sender.send(payload) {
                 error!("Failed to send payload to broadcast channel: {}", e);
@@ -542,9 +592,7 @@ async fn relay_post(
                 ));
             }
         }
-        Err(_) => {
-            // Channel doesn't exist (no subscribers), but signature is valid
-            // Accept the request for webhook validation purposes
+        None => {
             info!(
                 "Accepted webhook for channel '{}' (no active subscribers)",
                 id
@@ -555,8 +603,8 @@ async fn relay_post(
 }
 
 async fn not_found(req: HttpRequest) -> impl Responder {
-    let path = req.uri().path();
-    error!("{:?} {} Not Found", req, path);
+    // Don't log the full request: its headers may carry credentials.
+    error!("{} {} Not Found", req.method(), req.path());
     HttpResponse::NotFound().body(format!("<h1>404 Not Found</h1>"))
 }
 
@@ -574,6 +622,10 @@ async fn main() -> std::io::Result<()> {
     );
     if admin_token.is_none() {
         warn!("AUTH_PASS is unset or empty; /admin endpoint is disabled");
+    }
+    let log_payloads = std::env::var("LOG_PAYLOADS").is_ok_and(|v| v == "1");
+    if log_payloads {
+        warn!("LOG_PAYLOADS=1: webhook bodies of unencrypted channels are logged at debug level");
     }
     let public_path = std::env::var("APP_PUBLIC_PATH").unwrap_or_else(|_| "".to_string());
     let base_path = std::env::var("APP_BASE_PATH").unwrap_or_else(|_| "".to_string());
@@ -685,6 +737,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = web::Data::new(AppState {
         channels: channels.clone(),
         admin_token: admin_token.clone(),
+        log_payloads,
         public_path: public_path.clone(),
     });
 
@@ -996,6 +1049,38 @@ mod tests {
             &TestRequest::default().to_http_request(),
             &expected
         ));
+    }
+
+    #[test]
+    fn test_redact_headers() {
+        let headers: HashMap<String, String> = [
+            ("x-gitlab-token", "topsecret"),
+            ("Authorization", "Basic dXNlcjpwYXNz"),
+            ("x-hub-signature-256", "sha256=abc"),
+            ("x-line-signature", "abc="),
+            ("x-github-event", "push"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let redacted = redact_headers(&headers);
+        assert_eq!(redacted["x-gitlab-token"], "[REDACTED]");
+        assert_eq!(redacted["Authorization"], "[REDACTED]");
+        assert_eq!(redacted["x-hub-signature-256"], "[REDACTED]");
+        assert_eq!(redacted["x-line-signature"], "[REDACTED]");
+        assert_eq!(redacted["x-github-event"], "push");
+        let rendered = format!("{:?}", redacted);
+        assert!(!rendered.contains("topsecret") && !rendered.contains("dXNlcjpwYXNz"));
+    }
+
+    #[test]
+    fn test_should_log_body() {
+        assert!(!should_log_body(false, false));
+        assert!(!should_log_body(false, true));
+        // Opt-in never applies to end-to-end encrypted channels.
+        assert!(!should_log_body(true, true));
+        assert!(should_log_body(true, false));
     }
 
     #[test]
