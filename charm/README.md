@@ -88,6 +88,8 @@ i.e. in `server` and `hybrid` modes.
 - `public-path`: Public path prefix for the application
 - `base-path`: Base path for webhook relay endpoints
 - `ping-interval-ms`: Ping interval in milliseconds (default: 7500)
+- `max-body-bytes`: Maximum webhook request body size in bytes; larger requests get 413 (default: 26214400, i.e. 25 MiB)
+- `max-connections`: Maximum number of concurrent connections, including SSE subscribers (default: 0, no explicit limit)
 - `channel0`-`channel9`: Channel IDs (40-char hex SHA1) used as webhook URL paths (per channel)
 - `secret0`-`secret9`: Secret keys for signature validation (per channel)
 - `key0`-`key9`: RSA public keys for encryption (per channel, PEM format)
@@ -96,7 +98,7 @@ i.e. in `server` and `hybrid` modes.
 
 - `url`: SSE endpoint URL to connect to (required)
 - `forward`: HTTP POST URL to forward webhook payloads (optional). If specified, decrypted webhook payloads will be POSTed to this URL instead of stdout. Ping events are never forwarded.
-- `key`: RSA private key for decryption (PEM format)
+- `key`: RSA private key for decryption (PEM format). When set, relayd only accepts encrypted events and rejects plaintext ones, so the channel must have a matching public key (`keyN`) on the server.
 
 ## Channel Configuration
 

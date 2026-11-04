@@ -90,11 +90,12 @@ sequenceDiagram
 - Automatic channel cleanup for inactive subscribers
 - Configurable ping intervals for connection keep-alive
 - `/admin` channel listing protected by Basic auth (`AUTH_USER`, default `user`; `AUTH_PASS`). There is no default password: if `AUTH_PASS` is unset or empty, `/admin` is disabled.
-- Request body size limit (`MAX_BODY_BYTES`, default 25 MiB, which is GitHub's maximum webhook payload size). Larger requests are rejected with 413 without being buffered in full. Put a reverse proxy in front for connection and rate limits.
+- Request body size limit (`MAX_BODY_BYTES`, default 25 MiB, which is GitHub's maximum webhook payload size). Larger requests are rejected with 413 without being buffered in full.
+- Optional concurrent connection cap (`MAX_CONNECTIONS`, unset by default, minimum 2). It counts long-lived SSE subscribers too, and is split evenly across worker threads, so the effective cap may be rounded down (the startup log shows it). When the cap is reached, new connections wait in the listen backlog until a slot frees up. For per-client rate limits, put a reverse proxy in front.
 ### Client (`relayd`)
 - SSE client that connects to webhook-relay server
 - Automatic reconnection with exponential backoff
-- Decrypts encrypted payloads using RSA private key
+- Decrypts encrypted payloads using RSA private key. When a private key is given, plaintext `webhook` events are rejected, so a misconfigured server can't silently downgrade an encrypted channel. Pass an empty file such as `/dev/null` for unencrypted channels. An invalid key file exits with code 2.
 - **HTTP forwarding**: POST webhook payloads to a URL instead of stdout
 - Ping event filtering: heartbeat messages are not forwarded
 

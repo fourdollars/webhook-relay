@@ -533,6 +533,30 @@ fn should_log_body(log_payloads: bool, encrypted_channel: bool) -> bool {
 /// Default request body cap: GitHub's maximum webhook payload size (25 MiB).
 const DEFAULT_MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
 
+/// Parses a positive integer setting. Invalid values are logged and ignored.
+fn parse_positive_setting(name: &str, value: Option<String>) -> Option<usize> {
+    let value = value?;
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => Some(n),
+        _ => {
+            warn!("Invalid {} '{}'; ignoring", name, value);
+            None
+        }
+    }
+}
+
+/// Splits a total connection cap across workers. actix-web applies
+/// `max_connections` per worker, so this returns `(workers, per_worker)` with
+/// `workers * per_worker <= max_connections`.
+///
+/// Each worker gets at least 2 connections: in actix-server 2.6 a worker
+/// limited to 1 connection never resumes accepting once it is full.
+fn connection_limits(max_connections: usize, available_workers: usize) -> (usize, usize) {
+    let max_connections = max_connections.max(2);
+    let workers = available_workers.clamp(1, max_connections / 2);
+    (workers, max_connections / workers)
+}
+
 /// Reads the whole body, or returns `Ok(None)` as soon as it exceeds `limit`
 /// so oversized uploads are never buffered in full.
 async fn read_body_limited<S, E>(stream: &mut S, limit: usize) -> Result<Option<Vec<u8>>, E>
@@ -689,19 +713,11 @@ async fn main() -> std::io::Result<()> {
         warn!("AUTH_PASS is unset or empty; /admin endpoint is disabled");
     }
     let log_payloads = std::env::var("LOG_PAYLOADS").is_ok_and(|v| v == "1");
-    let max_body_bytes = match std::env::var("MAX_BODY_BYTES") {
-        Err(_) => DEFAULT_MAX_BODY_BYTES,
-        Ok(v) => match v.parse::<usize>() {
-            Ok(n) if n > 0 => n,
-            _ => {
-                warn!(
-                    "Invalid MAX_BODY_BYTES '{}'; using default {}",
-                    v, DEFAULT_MAX_BODY_BYTES
-                );
-                DEFAULT_MAX_BODY_BYTES
-            }
-        },
-    };
+    let max_body_bytes =
+        parse_positive_setting("MAX_BODY_BYTES", std::env::var("MAX_BODY_BYTES").ok())
+            .unwrap_or(DEFAULT_MAX_BODY_BYTES);
+    let max_connections =
+        parse_positive_setting("MAX_CONNECTIONS", std::env::var("MAX_CONNECTIONS").ok());
     if log_payloads {
         warn!("LOG_PAYLOADS=1: webhook bodies of unencrypted channels are logged at debug level");
     }
@@ -820,7 +836,7 @@ async fn main() -> std::io::Result<()> {
         public_path: public_path.clone(),
     });
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
             .service(index)
@@ -835,10 +851,20 @@ async fn main() -> std::io::Result<()> {
                     .service(relay_post),
             )
             .default_service(web::to(not_found))
-    })
-    .bind(addr)?
-    .run()
-    .await
+    });
+    let server = match max_connections {
+        Some(max_connections) => {
+            let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let (workers, per_worker) = connection_limits(max_connections, available);
+            info!(
+                "Connection limit: {} workers x {} connections (MAX_CONNECTIONS={})",
+                workers, per_worker, max_connections
+            );
+            server.workers(workers).max_connections(per_worker)
+        }
+        None => server,
+    };
+    server.bind(addr)?.run().await
 }
 
 #[cfg(test)]
@@ -1010,6 +1036,28 @@ mod tests {
         assert_eq!(decrypted, data);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn test_parse_positive_setting() {
+        assert_eq!(parse_positive_setting("X", None), None);
+        assert_eq!(parse_positive_setting("X", Some("42".into())), Some(42));
+        assert_eq!(parse_positive_setting("X", Some("0".into())), None);
+        assert_eq!(parse_positive_setting("X", Some("-1".into())), None);
+        assert_eq!(parse_positive_setting("X", Some("abc".into())), None);
+    }
+    #[test]
+    fn test_connection_limits_never_exceed_total() {
+        assert_eq!(connection_limits(1000, 8), (8, 125));
+        assert_eq!(connection_limits(10, 4), (4, 2));
+        assert_eq!(connection_limits(3, 8), (1, 3));
+        assert_eq!(connection_limits(1, 0), (1, 2));
+        for total in 2..100 {
+            for available in 0..20 {
+                let (workers, per_worker) = connection_limits(total, available);
+                assert!(per_worker >= 2);
+                assert!(workers * per_worker <= total);
+            }
+        }
     }
     #[test]
     fn test_x_hub_signature() {

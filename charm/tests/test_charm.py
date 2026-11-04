@@ -213,7 +213,14 @@ class TestWebhookRelayCharm(unittest.TestCase):
         self.assertIn("PORT=8000", service_content)
         self.assertIn("AUTH_USER=admin", service_content)
         self.assertIn("PING_INTERVAL_MS=5000", service_content)
+        self.assertIn("MAX_BODY_BYTES=26214400", service_content)
+        self.assertNotIn("MAX_CONNECTIONS", service_content)
         self.assertIn("ExecStart=", service_content)
+
+        self.harness.update_config({"max-body-bytes": 1048576, "max-connections": 500})
+        service_content = self.harness.charm._generate_webhook_service()
+        self.assertIn("MAX_BODY_BYTES=1048576", service_content)
+        self.assertIn("MAX_CONNECTIONS=500", service_content)
 
     def test_generate_relayd_service(self):
         """Test relayd service file generation."""

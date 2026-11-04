@@ -91,6 +91,16 @@ config:
       default: 7500
       description: Ping interval in milliseconds for heartbeat (server mode only)
     
+    max-body-bytes:
+      type: int
+      default: 26214400
+      description: Maximum webhook request body size in bytes; larger requests are rejected with 413 (server mode only). Default 25 MiB, GitHub's maximum webhook payload size. Values <= 0 fall back to the default.
+    
+    max-connections:
+      type: int
+      default: 0
+      description: Maximum number of concurrent connections, including long-lived SSE subscribers (server mode only). 0 means no explicit limit.
+    
     # Secret and key configuration for webhook mode (0-9 indexed)
     channel0:
       type: string

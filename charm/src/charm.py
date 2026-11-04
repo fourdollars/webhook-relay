@@ -436,8 +436,11 @@ class WebhookRelayCharm(CharmBase):
             f"APP_PUBLIC_PATH={self.config['public-path']}",
             f"APP_BASE_PATH={self.config['base-path']}",
             f"PING_INTERVAL_MS={self.config['ping-interval-ms']}",
+            f"MAX_BODY_BYTES={self.config['max-body-bytes']}",
             "RUST_LOG=info",
         ]
+        if self.config["max-connections"] > 0:
+            env_vars.append(f"MAX_CONNECTIONS={self.config['max-connections']}")
 
         return f"""[Unit]
 Description=Webhook Relay Server

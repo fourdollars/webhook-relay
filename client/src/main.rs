@@ -128,6 +128,20 @@ struct Payload {
     headers: String,
 }
 
+/// Returns whether `private_key_path` holds a private key.
+///
+/// An empty file (e.g. `/dev/null`) means no key. A non-empty file must be a
+/// valid PKCS#8 RSA private key, so a broken key is a configuration error
+/// rather than silently disabling the plaintext check.
+fn private_key_configured(private_key_path: &PathBuf) -> Result<bool, AppError> {
+    let private_key_pem = fs::read_to_string(private_key_path)?;
+    if private_key_pem.trim().is_empty() {
+        return Ok(false);
+    }
+    RsaPrivateKey::from_pkcs8_pem(&private_key_pem).map_err(|e| AppError::Pkcs8(e.into()))?;
+    Ok(true)
+}
+
 fn decrypt_asymmetric(
     to_decrypt_base64: &str,
     private_key_path: &PathBuf,
@@ -429,6 +443,20 @@ async fn main() -> Result<(), AppError> {
 
     let url = &args[1];
     let private_key_path = PathBuf::from(&args[2]);
+    let require_encryption = match private_key_configured(&private_key_path) {
+        Ok(true) => {
+            log::info!("Private key loaded; plaintext webhook events will be rejected");
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            eprintln!(
+                "Error: invalid private key file {:?}: {}",
+                private_key_path, e
+            );
+            process::exit(2);
+        }
+    };
     let forward_post_url = if args.len() == 4 {
         Some(args[3].clone())
     } else {
@@ -445,6 +473,7 @@ async fn main() -> Result<(), AppError> {
     match run_client_with_reconnection(
         url,
         &private_key_path,
+        require_encryption,
         forward_post_url,
         store_path,
         basic_auth,
@@ -475,6 +504,7 @@ async fn main() -> Result<(), AppError> {
 async fn run_client_with_reconnection(
     url: &str,
     private_key_path: &PathBuf,
+    require_encryption: bool,
     forward_post_url: Option<String>,
     store_path: Option<PathBuf>,
     basic_auth: Option<(String, String)>,
@@ -516,6 +546,7 @@ async fn run_client_with_reconnection(
         let result = run_client_session(
             client,
             private_key_path,
+            require_encryption,
             forward_post_url.clone(),
             store_path.clone(),
             &config,
@@ -595,6 +626,7 @@ async fn run_client_with_reconnection(
 async fn run_client_session(
     client: impl es::Client,
     private_key_path: &PathBuf,
+    require_encryption: bool,
     forward_post_url: Option<String>,
     store_path: Option<PathBuf>,
     config: &HeartbeatConfig,
@@ -658,6 +690,11 @@ async fn run_client_session(
                                 state.pings_received += 1;
                                 log::debug!("Received ping event, updated heartbeat timestamp");
                             }
+                            "webhook" if require_encryption => {
+                                log::error!(
+                                    "Rejected plaintext webhook event: a private key is configured, so only encrypted events are accepted (check the channel's public key on the server)"
+                                );
+                            }
                             "webhook" => {
                                 let data = match general_purpose::STANDARD.decode(&ev.data) {
                                     Ok(data) => data,
@@ -677,13 +714,9 @@ async fn run_client_session(
                                             Err(_) => return, // semaphore closed (session ending)
                                         };
                                         let sp = sp.as_deref().cloned();
-                                        if let Err(e) = handle_payload(
-                                            &payload,
-                                            &forward_url,
-                                            &sp,
-                                            &client,
-                                        )
-                                        .await
+                                        if let Err(e) =
+                                            handle_payload(&payload, &forward_url, &sp, &client)
+                                                .await
                                         {
                                             eprintln!("Failed to handle webhook payload: {}", e);
                                         }
@@ -739,6 +772,7 @@ async fn run_client_session(
                                     }
                                 });
                             }
+                            "error" => log::error!("Server sent error event: {}", ev.data),
                             _ => log::warn!("Received unknown event type: {}", ev.event_type),
                         },
                         es::SSE::Comment(comment) => {
@@ -872,6 +906,26 @@ mod tests {
             .collect();
         // 2 payloads × 2 files each = 4 files
         assert_eq!(entries.len(), 4);
+    }
+
+    #[test]
+    fn test_private_key_configured() {
+        let dir = tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name);
+
+        assert!(!private_key_configured(&PathBuf::from("/dev/null")).unwrap());
+        std::fs::write(path("blank"), "\n").unwrap();
+        assert!(!private_key_configured(&path("blank")).unwrap());
+
+        let key = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../tests/private_key.pem"
+        ));
+        assert!(private_key_configured(&key).unwrap());
+
+        std::fs::write(path("bad"), "not a key").unwrap();
+        assert!(private_key_configured(&path("bad")).is_err());
+        assert!(private_key_configured(&path("missing")).is_err());
     }
 
     #[test]
