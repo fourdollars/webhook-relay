@@ -88,6 +88,7 @@ sequenceDiagram
 - Automatic channel cleanup for inactive subscribers
 - Configurable ping intervals for connection keep-alive
 - `/admin` channel listing protected by Basic auth (`AUTH_USER`, default `user`; `AUTH_PASS`). There is no default password: if `AUTH_PASS` is unset or empty, `/admin` is disabled.
+- Request body size limit (`MAX_BODY_BYTES`, default 25 MiB, which is GitHub's maximum webhook payload size). Larger requests are rejected with 413 without being buffered in full. Put a reverse proxy in front for connection and rate limits.
 ### Client (`relayd`)
 - SSE client that connects to webhook-relay server
 - Automatic reconnection with exponential backoff

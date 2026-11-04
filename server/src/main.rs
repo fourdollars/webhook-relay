@@ -271,6 +271,8 @@ struct AppState {
     admin_token: Option<String>,
     /// `LOG_PAYLOADS=1`: allow logging webhook bodies at debug level.
     log_payloads: bool,
+    /// `MAX_BODY_BYTES`: largest accepted webhook body; larger requests get 413.
+    max_body_bytes: usize,
     public_path: String,
 }
 
@@ -506,6 +508,26 @@ fn should_log_body(log_payloads: bool, encrypted_channel: bool) -> bool {
     log_payloads && !encrypted_channel
 }
 
+/// Default request body cap: GitHub's maximum webhook payload size (25 MiB).
+const DEFAULT_MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
+
+/// Reads the whole body, or returns `Ok(None)` as soon as it exceeds `limit`
+/// so oversized uploads are never buffered in full.
+async fn read_body_limited<S, E>(stream: &mut S, limit: usize) -> Result<Option<Vec<u8>>, E>
+where
+    S: futures_util::Stream<Item = Result<web::Bytes, E>> + Unpin,
+{
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len() + chunk.len() > limit {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
+}
+
 /// Handles POST requests to broadcast a payload to a specific SSE channel.
 #[post("/{id}")]
 async fn relay_post(
@@ -517,13 +539,34 @@ async fn relay_post(
     if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Ok(HttpResponse::BadRequest().body("Invalid channel ID"));
     }
-    let mut body_data = String::new();
 
-    // Iterate over the payload chunks to read the incoming data.
-    while let Some(chunk_result) = payload.next().await {
-        let chunk = chunk_result?; // `chunk` is now of type `web::Bytes`
-        body_data.push_str(&String::from_utf8_lossy(&chunk));
+    let declared_len = req
+        .headers()
+        .get(actix_web::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if declared_len.is_some_and(|n| n > data.max_body_bytes) {
+        warn!(
+            "Rejected webhook: channel={} reason=\"body too large\" content_length={} limit={}",
+            id,
+            declared_len.unwrap_or(0),
+            data.max_body_bytes
+        );
+        return Ok(HttpResponse::PayloadTooLarge().body("Payload too large"));
     }
+
+    let body_bytes = match read_body_limited(&mut payload, data.max_body_bytes).await? {
+        Some(bytes) => bytes,
+        None => {
+            warn!(
+                "Rejected webhook: channel={} reason=\"body too large\" limit={}",
+                id, data.max_body_bytes
+            );
+            return Ok(HttpResponse::PayloadTooLarge().body("Payload too large"));
+        }
+    };
+    // Decode once after reading so multi-byte characters split across chunks stay intact.
+    let body_data = String::from_utf8_lossy(&body_bytes).into_owned();
 
     let secret_key = get_secret_key(&id).map_err(|e| {
         error!("Failed to read secret key for channel '{}': {}", id, e);
@@ -624,6 +667,19 @@ async fn main() -> std::io::Result<()> {
         warn!("AUTH_PASS is unset or empty; /admin endpoint is disabled");
     }
     let log_payloads = std::env::var("LOG_PAYLOADS").is_ok_and(|v| v == "1");
+    let max_body_bytes = match std::env::var("MAX_BODY_BYTES") {
+        Err(_) => DEFAULT_MAX_BODY_BYTES,
+        Ok(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                warn!(
+                    "Invalid MAX_BODY_BYTES '{}'; using default {}",
+                    v, DEFAULT_MAX_BODY_BYTES
+                );
+                DEFAULT_MAX_BODY_BYTES
+            }
+        },
+    };
     if log_payloads {
         warn!("LOG_PAYLOADS=1: webhook bodies of unencrypted channels are logged at debug level");
     }
@@ -738,6 +794,7 @@ async fn main() -> std::io::Result<()> {
         channels: channels.clone(),
         admin_token: admin_token.clone(),
         log_payloads,
+        max_body_bytes,
         public_path: public_path.clone(),
     });
 
@@ -1081,6 +1138,30 @@ mod tests {
         // Opt-in never applies to end-to-end encrypted channels.
         assert!(!should_log_body(true, true));
         assert!(should_log_body(true, false));
+    }
+
+    #[actix_web::test]
+    async fn test_read_body_limited() {
+        use futures_util::stream;
+
+        let chunks = || {
+            stream::iter(vec![
+                Ok::<_, std::convert::Infallible>(web::Bytes::from_static(b"hello ")),
+                Ok(web::Bytes::from_static(b"world")),
+            ])
+        };
+        assert_eq!(
+            read_body_limited(&mut chunks(), 11).await.unwrap(),
+            Some(b"hello world".to_vec())
+        );
+        assert_eq!(read_body_limited(&mut chunks(), 10).await.unwrap(), None);
+        // Stops at the chunk that crosses the limit instead of draining the stream.
+        let mut s = chunks();
+        assert_eq!(read_body_limited(&mut s, 5).await.unwrap(), None);
+        assert_eq!(
+            s.next().await.map(|c| c.unwrap()),
+            Some(web::Bytes::from_static(b"world"))
+        );
     }
 
     #[test]
