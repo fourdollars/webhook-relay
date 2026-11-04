@@ -87,7 +87,7 @@ sequenceDiagram
 - Optional asymmetric encryption for payloads
 - Automatic channel cleanup for inactive subscribers
 - Configurable ping intervals for connection keep-alive
-
+- `/admin` channel listing protected by Basic auth (`AUTH_USER`, default `user`; `AUTH_PASS`). There is no default password: if `AUTH_PASS` is unset or empty, `/admin` is disabled.
 ### Client (`relayd`)
 - SSE client that connects to webhook-relay server
 - Automatic reconnection with exponential backoff

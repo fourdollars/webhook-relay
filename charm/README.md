@@ -84,7 +84,7 @@ i.e. in `server` and `hybrid` modes.
 - `host`: Host address to bind (default: "0.0.0.0")
 - `port`: Port to bind (default: 3000)
 - `auth-user`: Admin username for /admin endpoint (default: "admin")
-- `auth-pass`: Admin password for /admin endpoint
+- `auth-pass`: Admin password for /admin endpoint. When empty (default), /admin is disabled.
 - `public-path`: Public path prefix for the application
 - `base-path`: Base path for webhook relay endpoints
 - `ping-interval-ms`: Ping interval in milliseconds (default: 7500)

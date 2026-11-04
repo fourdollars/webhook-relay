@@ -289,9 +289,22 @@ fn extract_basic_token(req: &HttpRequest) -> Option<String> {
 
 struct AppState {
     channels: GlobalChannels,
-    pass: String,
+    /// Expected `Authorization: Basic` token for `/admin`; `None` disables the endpoint.
+    admin_token: Option<String>,
     public_path: String,
-    user: String,
+}
+
+/// Builds the `/admin` Basic auth token. Returns `None` (endpoint disabled)
+/// unless a non-empty password is configured, so there is no default credential.
+fn admin_token(user: Option<String>, pass: Option<String>) -> Option<String> {
+    let pass = pass.filter(|p| !p.is_empty())?;
+    let user = user.filter(|u| !u.is_empty()).unwrap_or("user".to_string());
+    Some(general_purpose::STANDARD.encode(format!("{}:{}", user, pass)))
+}
+
+fn is_admin_authorized(req: &HttpRequest, expected: &str) -> bool {
+    extract_basic_token(req)
+        .is_some_and(|got| bool::from(got.as_bytes().ct_eq(expected.as_bytes())))
 }
 
 #[get("/")]
@@ -301,28 +314,19 @@ async fn index() -> impl Responder {
 
 #[get("/admin")]
 async fn admin(req: HttpRequest, data: web::Data<AppState>) -> HttpResponse {
-    let auth = req.headers().get("Authorization");
+    let Some(expected) = data.admin_token.as_deref() else {
+        return HttpResponse::NotFound().body("<h1>404 Not Found</h1>");
+    };
 
-    if auth.is_none() {
+    if !is_admin_authorized(&req, expected) {
         return unauthorized_basic_response("401");
     }
 
-    if let Some(auth) = auth {
-        let auth = auth.to_str().unwrap_or("");
-        if auth
-            == format!(
-                "Basic {}",
-                general_purpose::STANDARD.encode(format!("{}:{}", data.user, data.pass))
-            )
-        {
-            let content = format!(
-                "<html><body><h1>Channels</h1><ul>{}</ul></body></html>",
-                list_channels_page(&data.public_path, data.channels.clone())
-            );
-            return HttpResponse::Ok().body(content);
-        }
-    }
-    HttpResponse::Unauthorized().body("Unauthorized")
+    let content = format!(
+        "<html><body><h1>Channels</h1><ul>{}</ul></body></html>",
+        list_channels_page(&data.public_path, data.channels.clone())
+    );
+    HttpResponse::Ok().body(content)
 }
 
 #[get("/favicon.ico")]
@@ -564,8 +568,13 @@ async fn main() -> std::io::Result<()> {
     let host = std::env::var("HOST").unwrap_or("0.0.0.0".to_string());
     let port = std::env::var("PORT").unwrap_or("3000".to_string());
     let addr = format!("{}:{}", host, port);
-    let user = std::env::var("AUTH_USER").unwrap_or("user".to_string());
-    let pass = std::env::var("AUTH_PASS").unwrap_or("pass".to_string());
+    let admin_token = admin_token(
+        std::env::var("AUTH_USER").ok(),
+        std::env::var("AUTH_PASS").ok(),
+    );
+    if admin_token.is_none() {
+        warn!("AUTH_PASS is unset or empty; /admin endpoint is disabled");
+    }
     let public_path = std::env::var("APP_PUBLIC_PATH").unwrap_or_else(|_| "".to_string());
     let base_path = std::env::var("APP_BASE_PATH").unwrap_or_else(|_| "".to_string());
 
@@ -675,9 +684,8 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = web::Data::new(AppState {
         channels: channels.clone(),
-        pass: pass.clone(),
+        admin_token: admin_token.clone(),
         public_path: public_path.clone(),
-        user: user.clone(),
     });
 
     HttpServer::new(move || {
@@ -944,6 +952,49 @@ mod tests {
             req(&[("x-hub-signature-256", &good256)]).headers(),
             body,
             None
+        ));
+    }
+
+    #[test]
+    fn test_admin_token_requires_password() {
+        // No default credentials: unset or empty password disables /admin.
+        assert_eq!(admin_token(None, None), None);
+        assert_eq!(admin_token(Some("admin".into()), None), None);
+        assert_eq!(admin_token(Some("admin".into()), Some("".into())), None);
+        assert_eq!(
+            admin_token(Some("admin".into()), Some("s3cret".into())),
+            Some(general_purpose::STANDARD.encode("admin:s3cret"))
+        );
+        assert_eq!(
+            admin_token(None, Some("s3cret".into())),
+            Some(general_purpose::STANDARD.encode("user:s3cret"))
+        );
+    }
+
+    #[test]
+    fn test_is_admin_authorized() {
+        use actix_web::test::TestRequest;
+
+        let expected = general_purpose::STANDARD.encode("admin:s3cret");
+        let with = |v: &str| {
+            TestRequest::default()
+                .insert_header(("Authorization", v))
+                .to_http_request()
+        };
+        assert!(is_admin_authorized(
+            &with(&format!("Basic {}", expected)),
+            &expected
+        ));
+        assert!(!is_admin_authorized(
+            &with(&format!(
+                "Basic {}",
+                general_purpose::STANDARD.encode("admin:")
+            )),
+            &expected
+        ));
+        assert!(!is_admin_authorized(
+            &TestRequest::default().to_http_request(),
+            &expected
         ));
     }
 

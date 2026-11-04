@@ -74,7 +74,7 @@ config:
     auth-pass:
       type: string
       default: ""
-      description: Admin password for /admin endpoint (server mode only)
+      description: Admin password for /admin endpoint (server mode only). When empty, /admin is disabled (returns 404).
     
     public-path:
       type: string
