@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use subtle::ConstantTimeEq;
 use tokio::sync::broadcast::{self, Sender};
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -375,18 +376,48 @@ async fn relay_get(
     )))
 }
 
+#[derive(Clone, Copy)]
 enum SignatureType {
     XHubSignature,
+    XHubSignature256,
     XGitlabToken,
     XLineSignature,
 }
 
-fn get_secret_key(id: &str) -> String {
+const SIGNATURE_HEADERS: [(&str, SignatureType); 4] = [
+    ("x-hub-signature-256", SignatureType::XHubSignature256),
+    ("x-hub-signature", SignatureType::XHubSignature),
+    ("x-gitlab-token", SignatureType::XGitlabToken),
+    ("x-line-signature", SignatureType::XLineSignature),
+];
+
+/// Returns `Ok(None)` when the channel has no secret file configured.
+fn get_secret_key(id: &str) -> std::io::Result<Option<String>> {
     let secret_path = format!("secret/{}", id);
-    std::fs::read_to_string(&secret_path).unwrap_or_else(|e| {
-        error!("Failed to read secret key: {}", e);
-        "".to_string()
-    })
+    match std::fs::read_to_string(&secret_path) {
+        Ok(secret) => Ok(Some(secret)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn verify_hmac_hex<M: Mac + hmac::digest::KeyInit>(
+    secret_key: &str,
+    payload: &str,
+    signature: &str,
+    prefix: &str,
+) -> bool {
+    let Some(hex_sig) = signature.strip_prefix(prefix) else {
+        return false;
+    };
+    let Ok(sig_bytes) = hex::decode(hex_sig) else {
+        return false;
+    };
+    let Ok(mut mac) = <M as Mac>::new_from_slice(secret_key.as_bytes()) else {
+        return false;
+    };
+    mac.update(payload.as_bytes());
+    mac.verify_slice(&sig_bytes).is_ok()
 }
 
 fn validate_signature(
@@ -396,40 +427,56 @@ fn validate_signature(
     secret_key: &str,
 ) -> bool {
     if secret_key.is_empty() {
-        error!(
-            "Error: Secret key is empty for channel '{}'.",
-            expected_signature
-        );
+        error!("Secret key is empty; rejecting signed request.");
         return false;
     }
     match signature_type {
         SignatureType::XHubSignature => {
-            let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
-                .expect("HMAC can take any key size in test");
-            mac.update(payload.as_bytes());
-            let signature_bytes = mac.finalize().into_bytes();
-            let signature = format!("sha1={}", hex::encode(signature_bytes));
-            if signature != expected_signature {
-                return false;
-            }
+            verify_hmac_hex::<Hmac<Sha1>>(secret_key, payload, expected_signature, "sha1=")
         }
-        SignatureType::XGitlabToken => {
-            if expected_signature != secret_key {
-                return false;
-            }
+        SignatureType::XHubSignature256 => {
+            verify_hmac_hex::<Hmac<Sha256>>(secret_key, payload, expected_signature, "sha256=")
         }
+        SignatureType::XGitlabToken => expected_signature
+            .as_bytes()
+            .ct_eq(secret_key.as_bytes())
+            .into(),
         SignatureType::XLineSignature => {
-            let mut mac = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes())
-                .expect("HMAC can take any key size in test");
+            let Ok(sig_bytes) = general_purpose::STANDARD.decode(expected_signature) else {
+                return false;
+            };
+            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()) else {
+                return false;
+            };
             mac.update(payload.as_bytes());
-            let signature_bytes = mac.finalize().into_bytes();
-            let signature = general_purpose::STANDARD.encode(signature_bytes);
-            if signature != expected_signature {
+            mac.verify_slice(&sig_bytes).is_ok()
+        }
+    }
+}
+
+/// Decides whether a webhook may be relayed.
+///
+/// With a configured secret, at least one supported signature header must be
+/// present and every supported signature header present must be valid.
+/// Without a secret, only unsigned requests are accepted.
+fn verify_webhook(
+    headers: &actix_web::http::header::HeaderMap,
+    payload: &str,
+    secret_key: Option<&str>,
+) -> bool {
+    let mut found = false;
+    for (name, signature_type) in SIGNATURE_HEADERS {
+        for value in headers.get_all(name) {
+            found = true;
+            let (Some(secret), Ok(value_str)) = (secret_key, value.to_str()) else {
+                return false;
+            };
+            if !validate_signature(signature_type, value_str, payload, secret) {
                 return false;
             }
         }
-    };
-    true
+    }
+    found || secret_key.is_none()
 }
 
 /// Handles POST requests to broadcast a payload to a specific SSE channel.
@@ -451,39 +498,17 @@ async fn relay_post(
         body_data.push_str(&String::from_utf8_lossy(&chunk));
     }
 
+    let secret_key = get_secret_key(&id).map_err(|e| {
+        error!("Failed to read secret key for channel '{}': {}", id, e);
+        actix_web::error::ErrorInternalServerError("Failed to load channel secret")
+    })?;
+    let valid = verify_webhook(req.headers(), &body_data, secret_key.as_deref());
+
     // Extract headers into a HashMap<String, String>
     let mut headers = HashMap::new();
-    let mut valid = true;
     for (key, value) in req.headers().iter() {
         if let Ok(value_str) = value.to_str() {
             headers.insert(key.to_string(), value_str.to_string());
-            match key.as_str() {
-                "x-hub-signature" => {
-                    valid = validate_signature(
-                        SignatureType::XHubSignature,
-                        value_str,
-                        &body_data,
-                        &get_secret_key(&id),
-                    )
-                }
-                "x-gitlab-token" => {
-                    valid = validate_signature(
-                        SignatureType::XGitlabToken,
-                        value_str,
-                        &body_data,
-                        &get_secret_key(&id),
-                    )
-                }
-                "x-line-signature" => {
-                    valid = validate_signature(
-                        SignatureType::XLineSignature,
-                        value_str,
-                        &body_data,
-                        &get_secret_key(&id),
-                    )
-                }
-                _ => (),
-            }
         } else {
             warn!("Warning: Header value for '{}' is not valid UTF-8.", key);
         }
@@ -859,6 +884,67 @@ mod tests {
             "X-Line-Signature validation failed: calculated '{}', expected '{}'",
             calculated_signature, expected_signature
         );
+    }
+
+    #[test]
+    fn test_verify_webhook_policy() {
+        use actix_web::test::TestRequest;
+
+        let secret = "secret";
+        let body = "payload";
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body.as_bytes());
+        let good256 = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let bad256 = format!("sha256={}", "0".repeat(64));
+
+        let req = |hs: &[(&str, &str)]| {
+            let mut r = TestRequest::default();
+            for (k, v) in hs {
+                r = r.insert_header((*k, *v));
+            }
+            r.to_http_request()
+        };
+
+        // Secret configured: unsigned requests must be rejected.
+        assert!(!verify_webhook(req(&[]).headers(), body, Some(secret)));
+        assert!(!verify_webhook(
+            req(&[("x-github-event", "push")]).headers(),
+            body,
+            Some(secret)
+        ));
+        assert!(verify_webhook(
+            req(&[("x-hub-signature-256", &good256)]).headers(),
+            body,
+            Some(secret)
+        ));
+        assert!(!verify_webhook(
+            req(&[("x-hub-signature-256", &bad256)]).headers(),
+            body,
+            Some(secret)
+        ));
+        // A valid header must not mask an invalid one.
+        assert!(!verify_webhook(
+            req(&[
+                ("x-hub-signature-256", &good256),
+                ("x-gitlab-token", "wrong")
+            ])
+            .headers(),
+            body,
+            Some(secret)
+        ));
+        assert!(!verify_webhook(
+            req(&[("x-gitlab-token", "secre")]).headers(),
+            body,
+            Some(secret)
+        ));
+
+        // No secret configured: unsigned passes, signed is rejected.
+        assert!(verify_webhook(req(&[]).headers(), body, None));
+        assert!(!verify_webhook(
+            req(&[("x-hub-signature-256", &good256)]).headers(),
+            body,
+            None
+        ));
     }
 
     #[test]

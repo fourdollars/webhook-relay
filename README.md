@@ -83,7 +83,7 @@ sequenceDiagram
 
 ### Server (`webhook-relay`)
 - SSE-based webhook broadcasting with channel isolation
-- HMAC signature validation for webhook authentication
+- HMAC signature validation for webhook authentication (`X-Hub-Signature-256`, `X-Hub-Signature`, `X-Gitlab-Token`, `X-Line-Signature`). When `secret/<channel>` exists, unsigned or invalidly signed requests are rejected with 401.
 - Optional asymmetric encryption for payloads
 - Automatic channel cleanup for inactive subscribers
 - Configurable ping intervals for connection keep-alive
