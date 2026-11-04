@@ -14,7 +14,7 @@ use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast::{self, Sender};
@@ -31,9 +31,8 @@ struct Payload {
 
 type GlobalChannels = Arc<Mutex<HashMap<String, Sender<Payload>>>>;
 
-fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<String, Error> {
-    let public_key_pem = fs::read_to_string(public_key_path)?;
-    let public_key = RsaPublicKey::from_public_key_pem(&public_key_pem).map_err(|e| {
+fn encrypt_asymmetric(to_encrypt: &[u8], public_key_pem: &str) -> Result<String, Error> {
+    let public_key = RsaPublicKey::from_public_key_pem(public_key_pem).map_err(|e| {
         error!("Failed to parse public key: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to parse public key")
     })?;
@@ -51,7 +50,7 @@ fn encrypt_asymmetric(to_encrypt: &[u8], public_key_path: &PathBuf) -> Result<St
 }
 
 #[allow(deprecated)]
-fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Error> {
+fn encrypt_symmetric(text: &str, public_key_pem: &str) -> Result<String, Error> {
     let mut key_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut key_bytes);
 
@@ -72,7 +71,7 @@ fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Er
         }
     };
 
-    let encrypted_symmetric_key = encrypt_asymmetric(&key_bytes, public_key_path)?;
+    let encrypted_symmetric_key = encrypt_asymmetric(&key_bytes, public_key_pem)?;
 
     Ok(format!(
         "{}:{}:{}",
@@ -82,24 +81,51 @@ fn encrypt_symmetric(text: &str, public_key_path: &PathBuf) -> Result<String, Er
     ))
 }
 
-fn format_encrypted_event(data: &str, id: &str) -> String {
-    let public_key_path = PathBuf::from(format!("pem/{}", id));
-    match encrypt_symmetric(data, &public_key_path) {
-        Ok(encrypted_string) => {
-            format!(
-                "event: encrypted\ndata: {}\nid: {}\n\n",
-                encrypted_string,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis()
-            )
-        }
+fn format_encrypted_event(encrypted: &str) -> String {
+    format!(
+        "event: encrypted\ndata: {}\nid: {}\n\n",
+        encrypted,
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    )
+}
+
+/// Builds the SSE event for a webhook payload.
+///
+/// Plaintext is sent only when the channel has no public key file. If a key
+/// file exists but cannot be read or used, the payload is dropped and an
+/// error event is sent instead, so encryption never fails open.
+fn format_payload_event(data: &str, public_key_path: &Path, id: &str) -> String {
+    let public_key_pem = match fs::read_to_string(public_key_path) {
+        Ok(pem) => pem,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return format_webhook_event(data),
         Err(e) => {
-            error!("Failed to encrypt payload: {}", e);
-            String::new()
+            error!(
+                "Dropping webhook for channel '{}': cannot read public key {}: {}",
+                id,
+                public_key_path.display(),
+                e
+            );
+            return format_error_event("Failed to encrypt payload; payload dropped");
+        }
+    };
+    match encrypt_symmetric(data, &public_key_pem) {
+        Ok(encrypted) => format_encrypted_event(&encrypted),
+        Err(e) => {
+            error!(
+                "Dropping webhook for channel '{}': encryption failed: {}",
+                id, e
+            );
+            format_error_event("Failed to encrypt payload; payload dropped")
         }
     }
+}
+
+/// Fails closed: a key path whose existence cannot be determined counts as present.
+fn has_public_key(public_key_path: &Path) -> bool {
+    !matches!(public_key_path.try_exists(), Ok(false))
 }
 
 fn format_webhook_event(data: &str) -> String {
@@ -173,12 +199,8 @@ fn get_or_create_stream_channel_stream(
                 });
                 if payload.headers.len() > 0 {
                     debug!("Delivering webhook to subscriber on channel '{}'", id);
-                    let encrypted = format_encrypted_event(&json_string, &id);
-                    if encrypted.len() > 0 {
-                        encrypted
-                    } else {
-                        format_webhook_event(&json_string)
-                    }
+                    let public_key_path = PathBuf::from(format!("pem/{}", id));
+                    format_payload_event(&json_string, &public_key_path, &id)
                 } else {
                     format_ping_event(payload.body.as_str())
                 }
@@ -617,7 +639,7 @@ async fn relay_post(
             id,
             redact_headers(&headers)
         );
-        let encrypted = PathBuf::from(format!("pem/{}", id)).exists();
+        let encrypted = has_public_key(&PathBuf::from(format!("pem/{}", id)));
         if should_log_body(data.log_payloads, encrypted) {
             debug!("Webhook body: channel={} body={}", id, payload.body);
         }
@@ -944,9 +966,50 @@ mod tests {
         let private_key_path = PathBuf::from("../tests/private_key.pem");
         let original_plaintext =
             "This is a secret message used for testing encryption and decryption!";
-        let encrypted_string = encrypt_symmetric(original_plaintext, &public_key_path).unwrap();
+        let public_key_pem = fs::read_to_string(&public_key_path).unwrap();
+        let encrypted_string = encrypt_symmetric(original_plaintext, &public_key_pem).unwrap();
         let decrypted_plaintext = decrypt_symmetric(&encrypted_string, &private_key_path).unwrap();
         assert_eq!(original_plaintext, decrypted_plaintext);
+    }
+    #[test]
+    fn test_format_payload_event_fails_closed() {
+        let data = r#"{"body":"top secret","headers":"{}"}"#;
+        let plaintext_b64 = general_purpose::STANDARD.encode(data);
+        let dir = std::env::temp_dir().join(format!("webhook-relay-pem-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("missing");
+        let event = format_payload_event(data, &missing, "id");
+        assert!(event.starts_with("event: webhook\n"));
+        assert!(event.contains(&plaintext_b64));
+        assert!(!has_public_key(&missing));
+
+        let malformed = dir.join("malformed");
+        fs::write(&malformed, "not a pem").unwrap();
+        // A directory makes read_to_string fail with an error other than NotFound.
+        let unreadable = dir.join("unreadable");
+        fs::create_dir_all(&unreadable).unwrap();
+        for path in [&malformed, &unreadable] {
+            let event = format_payload_event(data, path, "id");
+            assert!(event.starts_with("event: error\n"), "{}", event);
+            assert!(!event.contains(&plaintext_b64));
+            assert!(!event.contains("top secret"));
+            assert!(has_public_key(path));
+        }
+
+        let event = format_payload_event(data, Path::new("../tests/public_key.pem"), "id");
+        assert!(event.starts_with("event: encrypted\n"));
+        let encrypted = event
+            .lines()
+            .nth(1)
+            .unwrap()
+            .strip_prefix("data: ")
+            .unwrap();
+        let decrypted =
+            decrypt_symmetric(encrypted, &PathBuf::from("../tests/private_key.pem")).unwrap();
+        assert_eq!(decrypted, data);
+
+        fs::remove_dir_all(&dir).unwrap();
     }
     #[test]
     fn test_x_hub_signature() {

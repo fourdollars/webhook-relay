@@ -65,7 +65,9 @@ sequenceDiagram
         ChannelManager-->>SSEClient: Broadcast Payload to all subscribers
         alt Asymmetric Public Key Exist in DB
             ChannelManager-->>SSEClient: Encrypt Payload (Asymmetric & Symmetric)<br>Format as 'event: encrypted'
-        else Asymmetric Public Key Do Not Exist in DB or Encryption Fails
+        else Public Key Exists but Is Unreadable or Encryption Fails
+            ChannelManager-->>SSEClient: Drop Payload<br>Format as 'event: error'
+        else Asymmetric Public Key Do Not Exist in DB
             ChannelManager-->>SSEClient: Format as 'event: webhook' (Base64 encoded)
         end
         ChannelManager-->>WebhookSender: HTTP 200 OK
@@ -84,7 +86,7 @@ sequenceDiagram
 ### Server (`webhook-relay`)
 - SSE-based webhook broadcasting with channel isolation
 - HMAC signature validation for webhook authentication (`X-Hub-Signature-256`, `X-Hub-Signature`, `X-Gitlab-Token`, `X-Line-Signature`). When `secret/<channel>` exists, unsigned or invalidly signed requests are rejected with 401.
-- Optional asymmetric encryption for payloads
+- Optional asymmetric encryption for payloads. When `pem/<channel>` exists, payloads are never sent in plaintext: if the key can't be read or used, the payload is dropped and subscribers get an `error` event.
 - Automatic channel cleanup for inactive subscribers
 - Configurable ping intervals for connection keep-alive
 - `/admin` channel listing protected by Basic auth (`AUTH_USER`, default `user`; `AUTH_PASS`). There is no default password: if `AUTH_PASS` is unset or empty, `/admin` is disabled.
